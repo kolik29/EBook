@@ -1,0 +1,118 @@
+#include "App.h"
+#include <Arduino.h>
+#include "../config/Pins.h"
+#include "../config/Constants.h"
+
+App::App()
+    : m_nextButton(
+          Pins::BUTTON_NEXT,
+          true,
+          Constants::BUTTON_DEBOUNCE_MS,
+          Constants::BUTTON_SHORT_PRESS_MS,
+          Constants::BUTTON_LONG_PRESS_MS),
+      m_prevButton(
+          Pins::BUTTON_PREV,
+          true,
+          Constants::BUTTON_DEBOUNCE_MS,
+          Constants::BUTTON_SHORT_PRESS_MS,
+          Constants::BUTTON_LONG_PRESS_MS),
+      m_sdCard(
+          Pins::SPI_SCK,
+          Pins::SPI_MISO,
+          Pins::SPI_MOSI,
+          Pins::SD_CS) {
+}
+
+void App::begin() {
+    Serial.begin(115200);
+    delay(1000);
+
+    m_nextButton.begin();
+    m_prevButton.begin();
+    m_wifiService.begin();
+
+    Serial.println();
+    Serial.println("App started");
+    Serial.println("Button test initialized");
+
+    Serial.println("Initializing SD card...");
+    if (m_sdCard.begin()) {
+        Serial.println("SD mounted successfully");
+        m_sdCard.printCardInfo(Serial);
+
+        Serial.println("Root directory:");
+        m_sdCard.listDir("/", 1, Serial);
+    } else {
+        Serial.println("SD mount failed");
+    }
+}
+
+void App::update() {
+    const ButtonEvent nextEvent = m_nextButton.update();
+    const ButtonEvent prevEvent = m_prevButton.update();
+
+    handleNextButtonEvent(nextEvent);
+    handlePrevButtonEvent(prevEvent);
+    handleBothButtonsHold();
+
+    m_wifiService.update();
+}
+
+void App::handleNextButtonEvent(const ButtonEvent &event) {
+    switch (event.type) {
+        case ButtonEventType::Click:
+            Serial.println("NEXT click");
+            break;
+
+        case ButtonEventType::LongPress:
+            Serial.println("NEXT long press");
+            break;
+
+        case ButtonEventType::None:
+        case ButtonEventType::Pressed:
+        case ButtonEventType::Released:
+        default:
+            break;
+    }
+}
+
+void App::handlePrevButtonEvent(const ButtonEvent &event) {
+    switch (event.type) {
+        case ButtonEventType::Click:
+            Serial.println("PREV click");
+            break;
+
+        case ButtonEventType::LongPress:
+            Serial.println("PREV long press");
+            break;
+
+        case ButtonEventType::None:
+        case ButtonEventType::Pressed:
+        case ButtonEventType::Released:
+        default:
+            break;
+    }
+}
+
+void App::handleBothButtonsHold() {
+    static bool bothHoldTriggered = false;
+
+    const bool bothPressed = m_nextButton.isPressed() && m_prevButton.isPressed();
+    const bool bothLongPressed = m_nextButton.isLongPressed() && m_prevButton.isLongPressed();
+
+    if (bothPressed && bothLongPressed && !bothHoldTriggered) {
+        bothHoldTriggered = true;
+
+        Serial.println("BOTH buttons long press -> WIFI MODE");
+
+        if (!m_wifiService.isEnabled()) {
+            m_wifiService.enable();
+        } else {
+            Serial.println("WIFI already enabled");
+        }
+    }
+
+    if (!bothPressed) {
+        bothHoldTriggered = false;
+    }
+}

@@ -1,0 +1,12 @@
+#pragma once
+
+namespace WifiConfig {
+    constexpr const char *AP_SSID = "";
+    constexpr const char *AP_PASSWORD = "";
+
+    constexpr const char *HOME_SSID = "";
+    constexpr const char *HOME_PASSWORD = "";
+
+    constexpr unsigned long STA_CONNECT_TIMEOUT_MS = 10000;
+    constexpr int MAX_STA_ATTEMPTS = 3;
+}
