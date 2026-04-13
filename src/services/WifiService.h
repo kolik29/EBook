@@ -12,6 +12,10 @@ public:
     void enable();
     void disable();
 
+    void scheduleAutoDisable(unsigned long timeoutMs);
+    void cancelAutoDisable();
+    void refreshAutoDisable();
+
     bool isEnabled() const;
     bool isApStarted() const;
     bool isStaConnected() const;
@@ -35,7 +39,12 @@ private:
     int m_staAttempts = 0;
     unsigned long m_attemptStartedAt = 0;
 
+    bool m_autoDisableScheduled = false;
+    unsigned long m_autoDisableTimeoutMs = 0;
+    unsigned long m_autoDisableStartedAt = 0;
+
     void startAccessPoint();
     void startStaAttempt();
     void handleConnecting();
+    void handleAutoDisable();
 };

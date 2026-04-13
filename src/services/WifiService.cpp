@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 #include "../config/WifiConfig.h"
+#include "../config/Constants.h"
 
 WifiService::WifiService() {
 }
@@ -29,6 +30,8 @@ void WifiService::enable() {
 
     startAccessPoint();
     startStaAttempt();
+
+    scheduleAutoDisable(Constants::WIFI_AUTO_DISABLE_MS);
 }
 
 void WifiService::disable() {
@@ -47,6 +50,34 @@ void WifiService::disable() {
     m_staAttempts = 0;
     m_attemptStartedAt = 0;
     m_state = State::Disabled;
+
+    cancelAutoDisable();
+}
+
+void WifiService::scheduleAutoDisable(unsigned long timeoutMs) {
+    m_autoDisableScheduled = true;
+    m_autoDisableTimeoutMs = timeoutMs;
+    m_autoDisableStartedAt = millis();
+
+    Serial.print("WIFI: auto-disable scheduled in ");
+    Serial.print(timeoutMs);
+    Serial.println(" ms");
+}
+
+void WifiService::cancelAutoDisable() {
+    m_autoDisableScheduled = false;
+    m_autoDisableTimeoutMs = 0;
+    m_autoDisableStartedAt = 0;
+}
+
+void WifiService::refreshAutoDisable() {
+    if (!m_enabled || !m_autoDisableScheduled) {
+        return;
+    }
+
+    m_autoDisableStartedAt = millis();
+
+    Serial.println("WIFI: auto-disable timer refreshed");
 }
 
 void WifiService::update() {
@@ -66,6 +97,8 @@ void WifiService::update() {
         default:
             break;
     }
+
+    handleAutoDisable();
 }
 
 bool WifiService::isEnabled() const {
@@ -161,4 +194,16 @@ void WifiService::handleConnecting() {
     }
 
     startStaAttempt();
+}
+
+void WifiService::handleAutoDisable() {
+    if (!m_autoDisableScheduled) {
+        return;
+    }
+
+    const unsigned long now = millis();
+    if ((now - m_autoDisableStartedAt) >= m_autoDisableTimeoutMs) {
+        Serial.println("WIFI: auto-disable timeout reached");
+        disable();
+    }
 }
