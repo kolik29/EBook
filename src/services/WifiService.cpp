@@ -4,7 +4,8 @@
 #include "../config/WifiConfig.h"
 #include "../config/Constants.h"
 
-WifiService::WifiService() {
+WifiService::WifiService(LedService &ledService)
+    : m_ledService(ledService) {
 }
 
 void WifiService::begin() {
@@ -31,6 +32,11 @@ void WifiService::enable() {
     startAccessPoint();
     startStaAttempt();
 
+    if (!m_webServer.begin()) {
+        Serial.println("WIFI: web server failed to start");
+    }
+
+    m_ledService.enableAnimatedMode();
     scheduleAutoDisable(Constants::WIFI_AUTO_DISABLE_MS);
 }
 
@@ -40,6 +46,8 @@ void WifiService::disable() {
     }
 
     Serial.println("WIFI: disabling");
+
+    m_webServer.stop();
 
     WiFi.disconnect(true, true);
     WiFi.softAPdisconnect(true);
@@ -52,6 +60,7 @@ void WifiService::disable() {
     m_state = State::Disabled;
 
     cancelAutoDisable();
+    m_ledService.disable();
 }
 
 void WifiService::scheduleAutoDisable(unsigned long timeoutMs) {
@@ -76,7 +85,6 @@ void WifiService::refreshAutoDisable() {
     }
 
     m_autoDisableStartedAt = millis();
-
     Serial.println("WIFI: auto-disable timer refreshed");
 }
 
@@ -98,6 +106,7 @@ void WifiService::update() {
             break;
     }
 
+    m_webServer.update();
     handleAutoDisable();
 }
 

@@ -1,10 +1,12 @@
 #pragma once
 
 #include <Arduino.h>
+#include "WebServerService.h"
+#include "LedService.h"
 
 class WifiService {
 public:
-    WifiService();
+    WifiService(LedService &ledService);
 
     void begin();
     void update();
@@ -42,6 +44,9 @@ private:
     bool m_autoDisableScheduled = false;
     unsigned long m_autoDisableTimeoutMs = 0;
     unsigned long m_autoDisableStartedAt = 0;
+
+    WebServerService m_webServer;
+    LedService &m_ledService;
 
     void startAccessPoint();
     void startStaAttempt();

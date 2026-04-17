@@ -9,4 +9,6 @@ namespace Pins {
     constexpr int SPI_MISO = 37;
 
     constexpr int SD_CS = 41;
+
+    constexpr int RGB_LED = 48;
 }

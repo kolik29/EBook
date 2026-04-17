@@ -20,7 +20,9 @@ App::App()
           Pins::SPI_SCK,
           Pins::SPI_MISO,
           Pins::SPI_MOSI,
-          Pins::SD_CS) {
+          Pins::SD_CS),
+      m_ledService(Pins::RGB_LED),
+      m_wifiService(m_ledService) {
 }
 
 void App::begin() {
@@ -29,6 +31,7 @@ void App::begin() {
 
     m_nextButton.begin();
     m_prevButton.begin();
+    m_ledService.begin();
     m_wifiService.begin();
 
     Serial.println();
@@ -56,6 +59,7 @@ void App::update() {
     handleBothButtonsHold();
 
     m_wifiService.update();
+    m_ledService.update();
 }
 
 void App::handleNextButtonEvent(const ButtonEvent &event) {
