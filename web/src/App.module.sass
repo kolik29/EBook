@@ -1,0 +1,22 @@
+body
+    margin: 0
+  
+.container
+    position: relative
+    grid-template-columns: min(30%, 500px) 1fr
+    grid-template-rows: auto 1fr
+    gap: 16px
+    max-height: 100vh
+
+    @media screen and (max-width: 900px)
+        grid-template-columns: 1fr
+        grid-template-rows: 1fr auto auto
+
+.bottomBar
+    display: grid
+    grid-template-columns: 1fr auto
+    gap: 16px
+
+.gridItem
+    min-width: 0
+    overflow: auto

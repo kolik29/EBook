@@ -1,0 +1,108 @@
+.display
+    &__flex
+        display: flex
+
+        &--md
+            @media screen and (min-width: 900px)
+                display: flex
+
+        &--xs
+            @media screen and (max-width: 900px)
+                display: flex
+
+    &__grid
+        display: grid
+
+        &--md
+            @media screen and (min-width: 900px)
+                display: grid
+
+        &--xs
+            @media screen and (max-width: 900px)
+                display: grid
+
+    &__none
+        display: none !important
+
+        &--md
+            @media screen and (min-width: 900px)
+                display: none !important
+
+        &--xs
+            @media screen and (max-width: 900px)
+                display: none !important
+
+.flex-direction
+    &__column
+        flex-direction: column
+
+.justify-content
+    &__center
+        justify-content: center
+
+    &__space-between
+        justify-content: space-between
+
+    &__space-around
+        justify-content: space-around
+
+.align-items
+    &__center
+        align-items: center
+
+.width
+    &__100vw
+        width: 100vw
+
+    &__100
+        width: 100%
+
+    &__50
+        &--xs
+            @media screen and (max-width: 900px)
+                width: 50%
+
+    &__auto
+        width: auto
+
+        &--xs
+            @media screen and (max-width: 900px)
+                width: auto
+
+.height
+    &__100
+        height: 100%
+
+    &__100vh
+        height: 100vh
+
+.position
+    &__relative
+        position: relative
+
+    &__fixed
+        position: fixed
+
+    &__absolute
+        position: absolute
+
+.text-align
+    &__center
+        text-align: center
+
+.top
+    &__0
+        top: 0
+
+.left
+    &__0
+        left: 0
+
+@keyframes spin
+    from
+        transform: rotate(0deg)
+    to
+        transform: rotate(360deg)
+
+.spin
+    animation: spin 0.4s ease
