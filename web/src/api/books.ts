@@ -1,5 +1,4 @@
 import type { Book, BookPagination } from '../types/book';
-import { API_URL } from './config';
 
 const mockBooks: Book[] = Array.from({ length: 200 }, (_, index) => ({
     id: index + 1,
@@ -15,7 +14,7 @@ const mockBooks: Book[] = Array.from({ length: 200 }, (_, index) => ({
 
 export const getBooks = async (): Promise<Book[]> => {
     try {
-        const res = await fetch(`${API_URL}/books`);
+        const res = await fetch('/books');
 
         if (!res.ok) {
             throw new Error('Failed to get books');
@@ -32,7 +31,7 @@ export const uploadBook = async (file: File): Promise<void> => {
         const formData = new FormData();
         formData.append('file', file);
 
-        const res = await fetch(`${API_URL}/books/upload`, {
+        const res = await fetch('/books/upload', {
             method: 'POST',
             body: formData,
         });
@@ -47,7 +46,7 @@ export const uploadBook = async (file: File): Promise<void> => {
 
 export const deleteBook = async (id: number): Promise<void> => {
     try {
-        const res = await fetch(`${API_URL}/books/${id}`, {
+        const res = await fetch(`/books/${id}`, {
             method: 'DELETE',
         });
 
@@ -61,7 +60,7 @@ export const deleteBook = async (id: number): Promise<void> => {
 
 export const updateCurrentPage = async (id: number, currentPage: number): Promise<void> => {
     try {
-        const res = await fetch(`${API_URL}/books/${id}`, {
+        const res = await fetch(`/books/${id}`, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json',
@@ -79,7 +78,7 @@ export const updateCurrentPage = async (id: number, currentPage: number): Promis
 
 export const getBookPagination = async (id: number): Promise<BookPagination | null> => {
     try {
-        const res = await fetch(`${API_URL}/books/${id}/pagination`);
+        const res = await fetch(`/books/${id}/pagination`);
 
         if (!res.ok) {
             throw new Error('Failed to get book pagination');

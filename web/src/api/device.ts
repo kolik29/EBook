@@ -1,8 +1,6 @@
-const API_URL = 'http://localhost:3000';
-
 export const disableWifiAction = async (): Promise<void> => {
     try {
-        const res = await fetch(`${API_URL}/disable-wifi`);
+        const res = await fetch('/disable-wifi');
         if (!res.ok) {
             throw new Error();
         }
@@ -13,7 +11,7 @@ export const disableWifiAction = async (): Promise<void> => {
 
 export const rotateDisplayAction = async (): Promise<void> => {
     try {
-        const res = await fetch(`${API_URL}/rotate-display`);
+        const res = await fetch('/rotate-display');
         if (!res.ok) {
             throw new Error();
         }
@@ -24,7 +22,7 @@ export const rotateDisplayAction = async (): Promise<void> => {
 
 export const refreshDisplayAction = async (): Promise<void> => {
     try {
-        const res = await fetch(`${API_URL}/refresh-display`);
+        const res = await fetch('/refresh-display');
         if (!res.ok) {
             throw new Error();
         }
