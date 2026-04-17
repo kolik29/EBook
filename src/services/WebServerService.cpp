@@ -70,10 +70,17 @@ static bool serveFile(const String &requestPath) {
 WebServerService::WebServerService() {
 }
 
-bool WebServerService::begin() {
+bool WebServerService::begin(
+    std::function<void()> onDisableWifi,
+    std::function<void()> onActivity
+) {
     if (m_running) {
         return true;
     }
+
+    m_onDisableWifi = onDisableWifi;
+    m_onActivity = onActivity;
+    m_disableWifiRequested = false;
 
     if (!LittleFS.begin(false)) {
         Serial.println("WEB: LittleFS mount failed");
@@ -82,18 +89,36 @@ bool WebServerService::begin() {
 
     listLittleFsRoot();
 
-    server.on("/ping", HTTP_GET, []() {
+    server.on("/ping", HTTP_GET, [this]() {
+        if (m_onActivity) {
+            m_onActivity();
+        }
+
         server.send(200, "text/plain", "KoliK eBook online");
     });
 
-    server.onNotFound([]() {
+    server.on("/disable-wifi", HTTP_GET, [this]() {
+        if (m_onActivity) {
+            m_onActivity();
+        }
+
+        server.send(200, "application/json; charset=utf-8", R"({"ok":true,"message":"wifi disable scheduled"})");
+        m_disableWifiRequested = true;
+
+        Serial.println("WEB: disable-wifi requested");
+    });
+
+    server.onNotFound([this]() {
+        if (m_onActivity) {
+            m_onActivity();
+        }
+
         const String uri = server.uri();
 
         if (serveFile(uri)) {
             return;
         }
 
-        // SPA fallback: если файла нет, отдаём index.html
         if (LittleFS.exists("/index.html")) {
             File file = LittleFS.open("/index.html", "r");
             server.streamFile(file, "text/html; charset=utf-8");
@@ -120,6 +145,14 @@ void WebServerService::update() {
     }
 
     server.handleClient();
+
+    if (m_disableWifiRequested) {
+        m_disableWifiRequested = false;
+
+        if (m_onDisableWifi) {
+            m_onDisableWifi();
+        }
+    }
 }
 
 void WebServerService::stop() {
@@ -129,6 +162,7 @@ void WebServerService::stop() {
 
     server.stop();
     m_running = false;
+    m_disableWifiRequested = false;
 
     Serial.println("WEB: server stopped");
 }

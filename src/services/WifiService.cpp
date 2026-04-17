@@ -32,10 +32,12 @@ void WifiService::enable() {
     startAccessPoint();
     startStaAttempt();
 
-    if (!m_webServer.begin()) {
+    if (!m_webServer.begin(
+            [this]() { this->disable(); },
+            [this]() { this->refreshAutoDisable(); }
+        )) {
         Serial.println("WIFI: web server failed to start");
     }
-
     m_ledService.enableAnimatedMode();
     scheduleAutoDisable(Constants::WIFI_AUTO_DISABLE_MS);
 }
