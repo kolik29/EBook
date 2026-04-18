@@ -1,17 +1,5 @@
 import type { Book, BookPagination } from '../types/book';
 
-const mockBooks: Book[] = Array.from({ length: 200 }, (_, index) => ({
-    id: index + 1,
-    title: "Harry Potter " + (index + 1),
-    author: 'JK Rowling',
-    img: index === 3 ? 'https://images.booksense.com/images/403/353/9780590353403.jpg234' : 'https://images.booksense.com/images/403/353/9780590353403.jpg',
-    active: index === 5 ? true : false,
-    page: {
-        total: 400,
-        current: index === 5 ? 123 : 1
-    }
-}));
-
 export const getBooks = async (): Promise<Book[]> => {
     try {
         const res = await fetch('/books');
@@ -21,8 +9,9 @@ export const getBooks = async (): Promise<Book[]> => {
         }
 
         return await res.json();
-    } catch {
-        return mockBooks;
+    } catch (error) {
+        console.error(error);
+        return [];
     }
 };
 
