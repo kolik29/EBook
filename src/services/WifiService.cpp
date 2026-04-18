@@ -218,3 +218,7 @@ void WifiService::handleAutoDisable() {
         disable();
     }
 }
+
+void WifiService::setLibraryService(LibraryService *libraryService) {
+    m_webServer.setLibraryService(libraryService);
+}

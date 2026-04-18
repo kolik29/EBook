@@ -45,6 +45,26 @@ void App::begin() {
 
         Serial.println("Root directory:");
         m_sdCard.listDir("/", 1, Serial);
+
+        Serial.println("Initializing library storage...");
+
+        m_libraryService = new LibraryService(m_sdCard.fs());
+
+        if (m_libraryService->begin()) {
+            Serial.println("Library storage initialized successfully");
+
+            LibraryData library;
+            if (m_libraryService->loadLibrary(library)) {
+                Serial.print("Library loaded, books count: ");
+                Serial.println(library.books.size());
+            } else {
+                Serial.println("Failed to load library.json");
+            }
+
+            m_wifiService.setLibraryService(m_libraryService);
+        } else {
+            Serial.println("Failed to initialize library storage");
+        }
     } else {
         Serial.println("SD mount failed");
     }

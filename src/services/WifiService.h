@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "WebServerService.h"
 #include "LedService.h"
+#include "LibraryService.h"
 
 class WifiService {
 public:
@@ -23,6 +24,8 @@ public:
     bool isStaConnected() const;
     bool isStaFinished() const;
     int getAttemptCount() const;
+
+    void setLibraryService(LibraryService *libraryService);
 
 private:
     enum class State {

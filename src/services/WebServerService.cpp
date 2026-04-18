@@ -3,8 +3,44 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WebServer.h>
+#include <ArduinoJson.h>
+#include <SD.h>
 
 static WebServer server(80);
+
+static File gUploadFile;
+static String gUploadFolder;
+static String gUploadOriginalFilename;
+static bool gUploadFailed = false;
+
+static String sanitizeFileName(const String &fileName) {
+    String result = fileName;
+    result.replace("\\", "_");
+    result.replace("/", "_");
+    result.replace(" ", "_");
+    result.replace(":", "_");
+    result.replace("*", "_");
+    result.replace("?", "_");
+    result.replace("\"", "_");
+    result.replace("<", "_");
+    result.replace(">", "_");
+    result.replace("|", "_");
+    return result;
+}
+
+static String generateBookFolderId() {
+    uint32_t rnd = (uint32_t)esp_random();
+    return "bk_" + String((unsigned long)millis()) + "_" + String(rnd, HEX);
+}
+
+static String stripExtension(const String &fileName) {
+    int dot = fileName.lastIndexOf('.');
+    if (dot < 0) {
+        return fileName;
+    }
+
+    return fileName.substring(0, dot);
+}
 
 static void listLittleFsRoot() {
     Serial.println("WEB: listing LittleFS root");
@@ -82,7 +118,6 @@ static bool isDigitsOnly(const String &value) {
 }
 
 static bool extractBookId(const String &uri, int &bookId) {
-    // /books/123
     if (!uri.startsWith("/books/")) {
         return false;
     }
@@ -97,7 +132,6 @@ static bool extractBookId(const String &uri, int &bookId) {
 }
 
 static bool extractBookPaginationId(const String &uri, int &bookId) {
-    // /books/123/pagination
     const String suffix = "/pagination";
 
     if (!uri.startsWith("/books/") || !uri.endsWith(suffix)) {
@@ -113,58 +147,79 @@ static bool extractBookPaginationId(const String &uri, int &bookId) {
     return true;
 }
 
-static void sendBooksMock() {
-    const char *json =
-        R"([
-            {
-                "id": 1,
-                "title": "Harry Potter 1",
-                "author": "JK Rowling",
-                "img": "https://images.booksense.com/images/403/353/9780590353403.jpg",
-                "active": false,
-                "page": {
-                    "total": 400,
-                    "current": 1
-                }
-            },
-            {
-                "id": 2,
-                "title": "Harry Potter 2",
-                "author": "JK Rowling",
-                "img": "https://images.booksense.com/images/403/353/9780590353403.jpg",
-                "active": false,
-                "page": {
-                    "total": 400,
-                    "current": 1
-                }
-            },
-            {
-                "id": 6,
-                "title": "Harry Potter 6",
-                "author": "JK Rowling",
-                "img": "https://images.booksense.com/images/403/353/9780590353403.jpg",
-                "active": true,
-                "page": {
-                    "total": 400,
-                    "current": 123
-                }
-            }
-        ])";
+static void sendBooksFromLibrary(LibraryService *libraryService) {
+    if (!libraryService) {
+        server.send(500, "application/json; charset=utf-8",
+            R"({"ok":false,"message":"library service not set"})");
+        return;
+    }
 
+    LibraryData library;
+    if (!libraryService->loadLibrary(library)) {
+        server.send(500, "application/json; charset=utf-8",
+            R"({"ok":false,"message":"failed to load library"})");
+        return;
+    }
+
+    JsonDocument doc;
+    JsonArray books = doc.to<JsonArray>();
+
+    for (const BookItem &item : library.books) {
+        JsonObject bookObj = books.add<JsonObject>();
+        bookObj["id"]     = item.id;
+        bookObj["folder"] = item.folder;
+        bookObj["title"]  = item.title;
+        bookObj["author"] = item.author;
+        bookObj["img"]    = item.cover;
+        bookObj["active"] = (item.folder == library.activeBookFolder);
+
+        JsonObject pageObj = bookObj["page"].to<JsonObject>();
+        pageObj["total"]   = item.page.total;
+        pageObj["current"] = item.page.current;
+    }
+
+    String json;
+    serializeJson(doc, json);
     server.send(200, "application/json; charset=utf-8", json);
+
+    Serial.print("WEB: /books sent, books=");
+    Serial.println(library.books.size());
 }
 
-static void sendBookPaginationMock(int bookId) {
-    String json = "{";
-    json += "\"id\":" + String(bookId) + ",";
-    json += "\"total\":400,";
-    json += "\"current\":123";
-    json += "}";
+static void sendBookPaginationFromLibrary(LibraryService *libraryService, int bookId) {
+    if (!libraryService) {
+        server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"library service not set"})");
+        return;
+    }
 
-    server.send(200, "application/json; charset=utf-8", json);
+    LibraryData library;
+    if (!libraryService->loadLibrary(library)) {
+        server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"failed to load library"})");
+        return;
+    }
+
+    for (const BookItem &item : library.books) {
+        if ((int)item.id == bookId) {
+            JsonDocument doc;
+            doc["id"] = item.id;
+            doc["total"] = item.page.total;
+            doc["current"] = item.page.current;
+
+            String json;
+            serializeJson(doc, json);
+            server.send(200, "application/json; charset=utf-8", json);
+            return;
+        }
+    }
+
+    server.send(404, "application/json; charset=utf-8", R"({"ok":false,"message":"book not found"})");
 }
 
 WebServerService::WebServerService() {
+}
+
+void WebServerService::setLibraryService(LibraryService *libraryService) {
+    m_libraryService = libraryService;
 }
 
 bool WebServerService::begin(
@@ -185,6 +240,23 @@ bool WebServerService::begin(
     }
 
     listLittleFsRoot();
+
+    server.on("/", HTTP_GET, [this]() {
+        if (m_onActivity) {
+            m_onActivity();
+        }
+
+        if (LittleFS.exists("/index.html")) {
+            File file = LittleFS.open("/index.html", "r");
+            server.streamFile(file, "text/html; charset=utf-8");
+            file.close();
+
+            Serial.println("WEB: served /index.html");
+            return;
+        }
+
+        server.send(404, "text/plain", "index.html not found");
+    });
 
     server.on("/disable-wifi", HTTP_GET, [this]() {
         if (m_onActivity) {
@@ -221,7 +293,8 @@ bool WebServerService::begin(
         }
 
         Serial.println("WEB: get books requested");
-        sendBooksMock();
+        sendBooksFromLibrary(m_libraryService);
+        Serial.println("WEB: get books response sent");
     });
 
     server.on(
@@ -232,21 +305,129 @@ bool WebServerService::begin(
                 m_onActivity();
             }
 
-            server.send(200, "application/json; charset=utf-8", R"({"ok":true,"message":"upload accepted"})");
+            if (gUploadFile) {
+                gUploadFile.close();
+            }
+
+            if (gUploadFailed) {
+                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"upload failed"})");
+                Serial.println("WEB: upload book failed");
+
+                gUploadFolder = "";
+                gUploadOriginalFilename = "";
+                gUploadFailed = false;
+                return;
+            }
+
+            if (!m_libraryService) {
+                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"library service not set"})");
+                Serial.println("WEB: upload failed, library service not set");
+
+                gUploadFolder = "";
+                gUploadOriginalFilename = "";
+                return;
+            }
+
+            BookItem createdBook;
+            const String title = stripExtension(gUploadOriginalFilename);
+            const String author = "Unknown";
+            const String coverPath = "";
+
+            if (!m_libraryService->addBook(
+                    gUploadFolder,
+                    title,
+                    author,
+                    coverPath,
+                    createdBook
+                )) {
+                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"failed to add book to library"})");
+                Serial.println("WEB: upload failed, cannot update library");
+
+                gUploadFolder = "";
+                gUploadOriginalFilename = "";
+                return;
+            }
+
+            String response = "{";
+            response += "\"ok\":true,";
+            response += "\"message\":\"upload accepted\",";
+            response += "\"id\":" + String(createdBook.id) + ",";
+            response += "\"folder\":\"" + createdBook.folder + "\"";
+            response += "}";
+
+            server.send(200, "application/json; charset=utf-8", response);
             Serial.println("WEB: upload book completed");
+
+            gUploadFolder = "";
+            gUploadOriginalFilename = "";
         },
-        []() {
+        [this]() {
             HTTPUpload &upload = server.upload();
 
+            if (!m_libraryService) {
+                gUploadFailed = true;
+                return;
+            }
+
             if (upload.status == UPLOAD_FILE_START) {
+                gUploadFailed = false;
+                gUploadOriginalFilename = sanitizeFileName(upload.filename);
+                gUploadFolder = generateBookFolderId();
+
+                const String bookDir = m_libraryService->getItemsPath() + "/" + gUploadFolder;
+                const String filePath = bookDir + "/original.epub";
+
                 Serial.print("WEB: upload started: ");
-                Serial.println(upload.filename);
+                Serial.println(gUploadOriginalFilename);
+
+                if (!SD.exists(bookDir)) {
+                    if (!SD.mkdir(bookDir)) {
+                        Serial.print("WEB: failed to create dir: ");
+                        Serial.println(bookDir);
+                        gUploadFailed = true;
+                        return;
+                    }
+                }
+
+                gUploadFile = SD.open(filePath, FILE_WRITE);
+                if (!gUploadFile) {
+                    Serial.print("WEB: failed to open upload file: ");
+                    Serial.println(filePath);
+                    gUploadFailed = true;
+                    return;
+                }
+
+                Serial.print("WEB: upload file path: ");
+                Serial.println(filePath);
             } else if (upload.status == UPLOAD_FILE_WRITE) {
+                if (gUploadFailed || !gUploadFile) {
+                    return;
+                }
+
+                size_t written = gUploadFile.write(upload.buf, upload.currentSize);
+                if (written != upload.currentSize) {
+                    Serial.println("WEB: upload write failed");
+                    gUploadFailed = true;
+                    gUploadFile.close();
+                    return;
+                }
+
                 Serial.print("WEB: upload chunk size: ");
                 Serial.println(upload.currentSize);
             } else if (upload.status == UPLOAD_FILE_END) {
+                if (gUploadFile) {
+                    gUploadFile.close();
+                }
+
                 Serial.print("WEB: upload finished, total size: ");
                 Serial.println(upload.totalSize);
+            } else if (upload.status == UPLOAD_FILE_ABORTED) {
+                if (gUploadFile) {
+                    gUploadFile.close();
+                }
+
+                gUploadFailed = true;
+                Serial.println("WEB: upload aborted");
             }
         }
     );
@@ -259,7 +440,11 @@ bool WebServerService::begin(
         const String uri = server.uri();
         const HTTPMethod method = server.method();
 
-        // DELETE /books/:id
+        Serial.print("WEB: onNotFound uri=");
+        Serial.print(uri);
+        Serial.print(" method=");
+        Serial.println((int)method);
+
         if (method == HTTP_DELETE) {
             int bookId = 0;
             if (extractBookId(uri, bookId)) {
@@ -271,7 +456,6 @@ bool WebServerService::begin(
             }
         }
 
-        // PATCH /books/:id
         if (method == HTTP_PATCH) {
             int bookId = 0;
             if (extractBookId(uri, bookId)) {
@@ -287,19 +471,26 @@ bool WebServerService::begin(
             }
         }
 
-        // GET /books/:id/pagination
         if (method == HTTP_GET) {
             int bookId = 0;
             if (extractBookPaginationId(uri, bookId)) {
                 Serial.print("WEB: get pagination requested, id=");
                 Serial.println(bookId);
 
-                sendBookPaginationMock(bookId);
+                sendBookPaginationFromLibrary(m_libraryService, bookId);
                 return;
             }
         }
 
         if (serveFile(uri)) {
+            return;
+        }
+
+        if (uri.startsWith("/books") ||
+            uri.startsWith("/disable-wifi") ||
+            uri.startsWith("/rotate-display") ||
+            uri.startsWith("/refresh-display")) {
+            server.send(404, "application/json; charset=utf-8", R"({"ok":false,"message":"api route not found"})");
             return;
         }
 
