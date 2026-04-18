@@ -89,14 +89,6 @@ bool WebServerService::begin(
 
     listLittleFsRoot();
 
-    server.on("/ping", HTTP_GET, [this]() {
-        if (m_onActivity) {
-            m_onActivity();
-        }
-
-        server.send(200, "text/plain", "KoliK eBook online");
-    });
-
     server.on("/disable-wifi", HTTP_GET, [this]() {
         if (m_onActivity) {
             m_onActivity();
