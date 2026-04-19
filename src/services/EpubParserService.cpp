@@ -119,6 +119,98 @@ namespace {
     }
 }
 
+bool EpubParserService::extractZipEntryData(
+    File &file,
+    const ZipEntryInfo &entry,
+    size_t maxSize,
+    uint8_t *&outData,
+    size_t &outSize
+) {
+    outData = nullptr;
+    outSize = 0;
+
+    if (entry.isDirectory) {
+        return false;
+    }
+
+    if (entry.uncompressedSize == 0 || entry.uncompressedSize > maxSize) {
+        Serial.println("EPUB: entry too large or empty");
+        return false;
+    }
+
+    if (!seekExact(file, entry.localHeaderOffset)) {
+        return false;
+    }
+
+    uint8_t localHeader[30];
+    if (!readExact(file, localHeader, sizeof(localHeader))) {
+        return false;
+    }
+
+    if (readLe32(localHeader) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        Serial.println("EPUB: invalid local file header signature");
+        return false;
+    }
+
+    const uint16_t fileNameLength = readLe16(localHeader + 26);
+    const uint16_t extraLength = readLe16(localHeader + 28);
+
+    if (!skipBytes(file, fileNameLength + extraLength)) {
+        return false;
+    }
+
+    uint8_t *compressedData = static_cast<uint8_t *>(malloc(entry.compressedSize));
+    if (!compressedData) {
+        return false;
+    }
+
+    if (!readExact(file, compressedData, entry.compressedSize)) {
+        free(compressedData);
+        return false;
+    }
+
+    uint8_t *outputData = static_cast<uint8_t *>(malloc(entry.uncompressedSize));
+    if (!outputData) {
+        free(compressedData);
+        return false;
+    }
+
+    bool ok = false;
+
+    if (entry.method == 0) {
+        if (entry.compressedSize == entry.uncompressedSize) {
+            memcpy(outputData, compressedData, entry.uncompressedSize);
+            ok = true;
+        }
+    } else if (entry.method == 8) {
+        const size_t result = tinfl_decompress_mem_to_mem(
+            outputData,
+            entry.uncompressedSize,
+            compressedData,
+            entry.compressedSize,
+            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
+        );
+
+        ok = (result != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)
+            && (result == entry.uncompressedSize);
+    } else {
+        Serial.print("EPUB: unsupported compression method: ");
+        Serial.println(entry.method);
+    }
+
+    free(compressedData);
+
+    if (!ok) {
+        free(outputData);
+        return false;
+    }
+
+    outData = outputData;
+    outSize = entry.uncompressedSize;
+
+    return true;
+}
+
 EpubParserService::EpubParserService(fs::FS &fs)
     : m_fs(fs) {
 }
@@ -170,7 +262,7 @@ bool EpubParserService::readMetadata(const String &epubPath, EpubMetadata &outMe
         return false;
     }
 
-    parsePackageMetadata(packageXml, outMetadata);
+    parsePackageMetadata(packageXml, packagePath, outMetadata);
 
     Serial.print("EPUB: parsed title = ");
     Serial.println(outMetadata.title);
@@ -250,83 +342,26 @@ bool EpubParserService::extractZipEntryText(
 ) {
     outText = "";
 
-    if (entry.isDirectory) {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+
+    if (!extractZipEntryData(file, entry, maxSize, data, size)) {
         return false;
     }
 
-    if (entry.uncompressedSize == 0 || entry.uncompressedSize > maxSize) {
-        Serial.println("EPUB: entry too large or empty");
+    char *textBuffer = static_cast<char *>(malloc(size + 1));
+    if (!textBuffer) {
+        free(data);
         return false;
     }
 
-    if (!seekExact(file, entry.localHeaderOffset)) {
-        return false;
-    }
+    memcpy(textBuffer, data, size);
+    textBuffer[size] = '\0';
 
-    uint8_t localHeader[30];
-    if (!readExact(file, localHeader, sizeof(localHeader))) {
-        return false;
-    }
+    outText = String(textBuffer);
 
-    if (readLe32(localHeader) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
-        Serial.println("EPUB: invalid local file header signature");
-        return false;
-    }
-
-    const uint16_t fileNameLength = readLe16(localHeader + 26);
-    const uint16_t extraLength = readLe16(localHeader + 28);
-
-    if (!skipBytes(file, fileNameLength + extraLength)) {
-        return false;
-    }
-
-    uint8_t *compressedData = static_cast<uint8_t *>(malloc(entry.compressedSize));
-    if (!compressedData) {
-        return false;
-    }
-
-    if (!readExact(file, compressedData, entry.compressedSize)) {
-        free(compressedData);
-        return false;
-    }
-
-    char *outputData = static_cast<char *>(malloc(entry.uncompressedSize + 1));
-    if (!outputData) {
-        free(compressedData);
-        return false;
-    }
-
-    bool ok = false;
-
-    if (entry.method == 0) {
-        memcpy(outputData, compressedData, entry.uncompressedSize);
-        ok = true;
-    } else if (entry.method == 8) {
-        const size_t result = tinfl_decompress_mem_to_mem(
-            outputData,
-            entry.uncompressedSize,
-            compressedData,
-            entry.compressedSize,
-            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
-        );
-
-        ok = (result != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)
-            && (result == entry.uncompressedSize);
-    } else {
-        Serial.print("EPUB: unsupported compression method: ");
-        Serial.println(entry.method);
-    }
-
-    free(compressedData);
-
-    if (!ok) {
-        free(outputData);
-        return false;
-    }
-
-    outputData[entry.uncompressedSize] = '\0';
-    outText = String(outputData);
-    free(outputData);
+    free(textBuffer);
+    free(data);
 
     return true;
 }
@@ -365,6 +400,7 @@ bool EpubParserService::findRootFilePath(const String &containerXml, String &out
 
 bool EpubParserService::parsePackageMetadata(
     const String &packageXml,
+    const String &packagePath,
     EpubMetadata &outMetadata
 ) const {
     outMetadata.title = extractXmlTagValue(packageXml, "dc:title");
@@ -379,7 +415,108 @@ bool EpubParserService::parsePackageMetadata(
         outMetadata.author = extractXmlTagValue(packageXml, "creator");
     }
 
-    return !outMetadata.title.isEmpty() || !outMetadata.author.isEmpty();
+    outMetadata.coverInternalPath = "";
+    outMetadata.hasCover = false;
+
+    String metaCoverId = "";
+    int searchPos = 0;
+
+    while (true) {
+        const int metaPos = packageXml.indexOf("<meta", searchPos);
+        if (metaPos < 0) {
+            break;
+        }
+
+        const int tagEnd = packageXml.indexOf('>', metaPos);
+        if (tagEnd < 0) {
+            break;
+        }
+
+        String name = extractXmlAttributeValue(packageXml, metaPos, "name");
+        name.toLowerCase();
+
+        if (name == "cover") {
+            metaCoverId = extractXmlAttributeValue(packageXml, metaPos, "content");
+            break;
+        }
+
+        searchPos = tagEnd + 1;
+    }
+
+    String coverHrefByProperties = "";
+    String coverHrefByMetaId = "";
+    String fallbackCoverHref = "";
+
+    searchPos = 0;
+
+    while (true) {
+        const int itemPos = packageXml.indexOf("<item", searchPos);
+        if (itemPos < 0) {
+            break;
+        }
+
+        const int tagEnd = packageXml.indexOf('>', itemPos);
+        if (tagEnd < 0) {
+            break;
+        }
+
+        String id = extractXmlAttributeValue(packageXml, itemPos, "id");
+        String href = extractXmlAttributeValue(packageXml, itemPos, "href");
+        String mediaType = extractXmlAttributeValue(packageXml, itemPos, "media-type");
+        String properties = extractXmlAttributeValue(packageXml, itemPos, "properties");
+
+        String idLower = id;
+        String hrefLower = href;
+        String mediaTypeLower = mediaType;
+        String propertiesLower = properties;
+
+        idLower.toLowerCase();
+        hrefLower.toLowerCase();
+        mediaTypeLower.toLowerCase();
+        propertiesLower.toLowerCase();
+
+        const bool isImage = isImageMediaType(mediaTypeLower);
+
+        if (coverHrefByProperties.isEmpty()
+            && isImage
+            && propertiesLower.indexOf("cover-image") >= 0) {
+            coverHrefByProperties = href;
+        }
+
+        if (coverHrefByMetaId.isEmpty()
+            && !metaCoverId.isEmpty()
+            && id == metaCoverId
+            && isImage) {
+            coverHrefByMetaId = href;
+        }
+
+        if (fallbackCoverHref.isEmpty()
+            && isImage
+            && (idLower.indexOf("cover") >= 0 || hrefLower.indexOf("cover") >= 0)) {
+            fallbackCoverHref = href;
+        }
+
+        searchPos = tagEnd + 1;
+    }
+
+    String selectedCoverHref = "";
+
+    if (!coverHrefByProperties.isEmpty()) {
+        selectedCoverHref = coverHrefByProperties;
+    } else if (!coverHrefByMetaId.isEmpty()) {
+        selectedCoverHref = coverHrefByMetaId;
+    } else if (!fallbackCoverHref.isEmpty()) {
+        selectedCoverHref = fallbackCoverHref;
+    }
+
+    if (!selectedCoverHref.isEmpty()) {
+        outMetadata.coverInternalPath = resolveRelativePath(packagePath, selectedCoverHref);
+        outMetadata.hasCover = !outMetadata.coverInternalPath.isEmpty();
+    }
+
+    return !outMetadata.title.isEmpty()
+        || !outMetadata.author.isEmpty()
+        || outMetadata.hasCover;
 }
 
 String EpubParserService::extractXmlTagValue(const String &xml, const char *tagName) const {
@@ -510,4 +647,160 @@ String EpubParserService::decodeXmlEntities(String value) const {
     value.replace("&#34;", "\"");
 
     return value;
+}
+
+String EpubParserService::normalizePath(const String &path) const {
+    String result = "";
+    int start = 0;
+    const int len = path.length();
+
+    while (start <= len) {
+        int slashPos = path.indexOf('/', start);
+        if (slashPos < 0) {
+            slashPos = len;
+        }
+
+        String part = path.substring(start, slashPos);
+        part.trim();
+
+        if (!part.isEmpty() && part != ".") {
+            if (part == "..") {
+                const int lastSlash = result.lastIndexOf('/');
+
+                if (lastSlash >= 0) {
+                    result.remove(lastSlash);
+                } else {
+                    result = "";
+                }
+            } else {
+                if (!result.isEmpty()) {
+                    result += "/";
+                }
+
+                result += part;
+            }
+        }
+
+        if (slashPos >= len) {
+            break;
+        }
+
+        start = slashPos + 1;
+    }
+
+    return result;
+}
+
+String EpubParserService::resolveRelativePath(const String &baseFilePath, const String &relativePath) const {
+    if (relativePath.isEmpty()) {
+        return "";
+    }
+
+    if (relativePath[0] == '/') {
+        return normalizePath(relativePath.substring(1));
+    }
+
+    const int slashPos = baseFilePath.lastIndexOf('/');
+    const String baseDir = (slashPos >= 0)
+        ? baseFilePath.substring(0, slashPos + 1)
+        : "";
+
+    return normalizePath(baseDir + relativePath);
+}
+
+String EpubParserService::getLowerFileExtension(const String &path) const {
+    const int slashPos = path.lastIndexOf('/');
+    const int dotPos = path.lastIndexOf('.');
+
+    if (dotPos < 0 || (slashPos >= 0 && dotPos < slashPos)) {
+        return "";
+    }
+
+    String ext = path.substring(dotPos);
+    ext.toLowerCase();
+
+    return ext;
+}
+
+bool EpubParserService::isImageMediaType(const String &mediaType) const {
+    return mediaType == "image/jpeg"
+        || mediaType == "image/jpg"
+        || mediaType == "image/png"
+        || mediaType == "image/gif"
+        || mediaType == "image/webp"
+        || mediaType == "image/svg+xml";
+}
+
+bool EpubParserService::extractCoverToFile(
+    const String &epubPath,
+    const EpubMetadata &metadata,
+    const String &outputBasePath,
+    String &outCoverPath
+) {
+    outCoverPath = "";
+
+    if (!metadata.hasCover || metadata.coverInternalPath.isEmpty()) {
+        return false;
+    }
+
+    File epubFile = m_fs.open(epubPath, "r");
+    if (!epubFile || epubFile.isDirectory()) {
+        Serial.println("EPUB: failed to open file for cover extraction");
+        return false;
+    }
+
+    ZipEntryInfo coverEntry;
+    if (!findZipEntry(epubFile, metadata.coverInternalPath.c_str(), coverEntry)) {
+        Serial.print("EPUB: cover entry not found: ");
+        Serial.println(metadata.coverInternalPath);
+        epubFile.close();
+        return false;
+    }
+
+    uint8_t *coverData = nullptr;
+    size_t coverSize = 0;
+
+    if (!extractZipEntryData(epubFile, coverEntry, 5 * 1024 * 1024, coverData, coverSize)) {
+        Serial.println("EPUB: failed to extract cover data");
+        epubFile.close();
+        return false;
+    }
+
+    epubFile.close();
+
+    String ext = getLowerFileExtension(metadata.coverInternalPath);
+    if (ext.isEmpty()) {
+        ext = ".jpg";
+    }
+
+    const String outputPath = outputBasePath + ext;
+
+    if (m_fs.exists(outputPath)) {
+        m_fs.remove(outputPath);
+    }
+
+    File outFile = m_fs.open(outputPath, "w");
+    if (!outFile) {
+        Serial.print("EPUB: failed to open cover output file: ");
+        Serial.println(outputPath);
+        free(coverData);
+        return false;
+    }
+
+    const size_t written = outFile.write(coverData, coverSize);
+    outFile.close();
+    free(coverData);
+
+    if (written != coverSize) {
+        Serial.print("EPUB: failed to fully write cover file: ");
+        Serial.println(outputPath);
+        return false;
+    }
+
+    outCoverPath = outputPath;
+
+    Serial.print("EPUB: cover saved to ");
+    Serial.println(outCoverPath);
+
+    return true;
 }

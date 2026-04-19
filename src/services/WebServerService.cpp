@@ -6,8 +6,6 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <SD.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 static WebServer server(80);
 
@@ -15,15 +13,6 @@ static File gUploadFile;
 static String gUploadFolder;
 static String gUploadOriginalFilename;
 static bool gUploadFailed = false;
-
-static void logFreeStack(const char *label) {
-    UBaseType_t words = uxTaskGetStackHighWaterMark(nullptr);
-    Serial.print("STACK ");
-    Serial.print(label);
-    Serial.print(": ");
-    Serial.print((uint32_t)words * sizeof(StackType_t));
-    Serial.println(" bytes free");
-}
 
 static String sanitizeFileName(const String &fileName) {
     String result = fileName;
@@ -75,15 +64,20 @@ static void listLittleFsRoot() {
 }
 
 static String getContentType(const String &path) {
-    if (path.endsWith(".html")) return "text/html; charset=utf-8";
-    if (path.endsWith(".css")) return "text/css; charset=utf-8";
-    if (path.endsWith(".js")) return "application/javascript; charset=utf-8";
-    if (path.endsWith(".json")) return "application/json; charset=utf-8";
-    if (path.endsWith(".svg")) return "image/svg+xml";
-    if (path.endsWith(".png")) return "image/png";
-    if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-    if (path.endsWith(".ico")) return "image/x-icon";
-    if (path.endsWith(".txt")) return "text/plain; charset=utf-8";
+    String lowerPath = path;
+    lowerPath.toLowerCase();
+
+    if (lowerPath.endsWith(".html")) return "text/html; charset=utf-8";
+    if (lowerPath.endsWith(".css")) return "text/css; charset=utf-8";
+    if (lowerPath.endsWith(".js")) return "application/javascript; charset=utf-8";
+    if (lowerPath.endsWith(".json")) return "application/json; charset=utf-8";
+    if (lowerPath.endsWith(".svg")) return "image/svg+xml";
+    if (lowerPath.endsWith(".png")) return "image/png";
+    if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) return "image/jpeg";
+    if (lowerPath.endsWith(".gif")) return "image/gif";
+    if (lowerPath.endsWith(".webp")) return "image/webp";
+    if (lowerPath.endsWith(".ico")) return "image/x-icon";
+    if (lowerPath.endsWith(".txt")) return "text/plain; charset=utf-8";
     return "application/octet-stream";
 }
 
@@ -111,6 +105,32 @@ static bool serveFile(const String &requestPath) {
 
     Serial.print("WEB: served ");
     Serial.println(path);
+
+    return true;
+}
+
+static bool serveSdFile(const String &requestPath) {
+    if (!requestPath.startsWith("/books/cover/")) {
+        return false;
+    }
+
+    if (!SD.exists(requestPath)) {
+        return false;
+    }
+
+    File file = SD.open(requestPath, "r");
+    if (!file || file.isDirectory()) {
+        Serial.print("WEB: failed to open SD file: ");
+        Serial.println(requestPath);
+        return false;
+    }
+
+    const String contentType = getContentType(requestPath);
+    server.streamFile(file, contentType);
+    file.close();
+
+    Serial.print("WEB: served SD file ");
+    Serial.println(requestPath);
 
     return true;
 }
@@ -340,16 +360,14 @@ bool WebServerService::begin(
                 return;
             }
 
-            logFreeStack("before epub parse");
-
             BookItem createdBook;
 
-            const String filePath = m_libraryService->getItemsPath() + "/" + gUploadFolder + "/original.epub";
+            const String epubPath = m_libraryService->getItemsPath() + "/" + gUploadFolder + "/original.epub";
 
             EpubParserService epubParser(SD);
             EpubMetadata metadata;
 
-            if (!epubParser.readMetadata(filePath, metadata)) {
+            if (!epubParser.readMetadata(epubPath, metadata)) {
                 Serial.println("WEB: failed to parse EPUB metadata, using fallback values");
             }
 
@@ -361,9 +379,16 @@ bool WebServerService::begin(
                 ? "Unknown"
                 : metadata.author;
 
-            const String coverPath = "";
+            String coverPath = "";
 
-            logFreeStack("after epub parse");
+            if (metadata.hasCover) {
+                const String coverBasePath = m_libraryService->getCoverPath() + "/" + gUploadFolder;
+
+                if (!epubParser.extractCoverToFile(epubPath, metadata, coverBasePath, coverPath)) {
+                    Serial.println("WEB: failed to extract cover, using empty cover path");
+                    coverPath = "";
+                }
+            }
 
             if (!m_libraryService->addBook(
                     gUploadFolder,
@@ -441,6 +466,7 @@ bool WebServerService::begin(
                     Serial.println("WEB: upload write failed");
                     gUploadFailed = true;
                     gUploadFile.close();
+                    gUploadFile = File();
                     return;
                 }
 
@@ -449,6 +475,7 @@ bool WebServerService::begin(
             } else if (upload.status == UPLOAD_FILE_END) {
                 if (gUploadFile) {
                     gUploadFile.close();
+                    gUploadFile = File();
                 }
 
                 Serial.print("WEB: upload finished, total size: ");
@@ -456,6 +483,7 @@ bool WebServerService::begin(
             } else if (upload.status == UPLOAD_FILE_ABORTED) {
                 if (gUploadFile) {
                     gUploadFile.close();
+                    gUploadFile = File();
                 }
 
                 gUploadFailed = true;
@@ -512,6 +540,10 @@ bool WebServerService::begin(
                 sendBookPaginationFromLibrary(m_libraryService, bookId);
                 return;
             }
+        }
+
+        if (serveSdFile(uri)) {
+            return;
         }
 
         if (serveFile(uri)) {
