@@ -21,7 +21,7 @@ const ActionBar = () => {
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const loadBooks = useBooksStore((state) => state.loadBooks);
+    const reloadBooks = useBooksStore((state) => state.reloadBooks);
 
     const handleDisableWiFi = () => {
         disableWifiAction();
@@ -58,7 +58,7 @@ const ActionBar = () => {
         try {
             await Promise.all(files.map((file) => uploadBook(file)));
 
-            await loadBooks();
+            await reloadBooks();
 
             console.log('Uploaded files:', files);
         } catch (error) {

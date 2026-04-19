@@ -11,7 +11,6 @@ const BookCard = ({ img, title, active, onClick }: { img: string; title: string;
                 <BookCover
                     src={img}
                     alt={title}
-                    borderRadius="16px 16px 0 0"
                 />
                 {active &&
                 <Stack

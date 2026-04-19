@@ -1,22 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import { Box } from "@mui/material";
-
-type BookCoverProps = {
-    src?: string | null;
-    alt: string;
-    width?: number | string;
-    height?: number | string;
-    borderRadius?: number | string;
-};
+import type { BookCoverProps } from "../../../types/book";
 
 const BookCover = ({
     src,
     alt,
     width = "100%",
-    height = "100%",
+    height = "100%"
 }: BookCoverProps) => {
     const [hasError, setHasError] = useState(!src);
+
+    useEffect(() => {
+        setHasError(!src);
+    }, [src]);
 
     if (hasError) {
         return (
@@ -45,6 +42,7 @@ const BookCover = ({
             onError={() => setHasError(true)}
             sx={{
                 width,
+                height,
                 objectFit: "cover",
                 display: "block",
                 border: "1px solid",

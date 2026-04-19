@@ -1,22 +1,29 @@
-import { create } from 'zustand';
-import type { Book } from '../types/book';
-import { getBooks } from '../api/books';
+import { create } from "zustand";
+import type { Book, BooksStore } from "../types/book";
+import { getBooks } from "../api/books";
 
-type BooksStore = {
-    books: Book[];
-    loading: boolean;
-    loaded: boolean;
-    query: string;
-    setQuery: (query: string) => void;
-    loadBooks: () => Promise<void>;
-    selectBook: (id: number) => void;
+const normalizeBooks = (books: Book[]): Book[] => {
+    if (!books.length) {
+        return [];
+    }
+
+    const hasActive = books.some((book) => book.active);
+
+    if (hasActive) {
+        return books;
+    }
+
+    return books.map((book, index) => ({
+        ...book,
+        active: index === 0,
+    }));
 };
 
 export const useBooksStore = create<BooksStore>()((set, get) => ({
     books: [],
     loading: false,
     loaded: false,
-    query: '',
+    query: "",
 
     setQuery: (query) => set({ query }),
 
@@ -31,9 +38,44 @@ export const useBooksStore = create<BooksStore>()((set, get) => ({
 
         try {
             const books = await getBooks();
+
             set({
-                books,
+                books: normalizeBooks(books),
                 loaded: true,
+            });
+        } catch (error) {
+            console.error(error);
+
+            set({
+                loaded: false,
+            });
+        } finally {
+            set({ loading: false });
+        }
+    },
+
+    reloadBooks: async () => {
+        if (get().loading) {
+            return;
+        }
+
+        set({
+            loading: true,
+            loaded: false,
+        });
+
+        try {
+            const books = await getBooks();
+
+            set({
+                books: normalizeBooks(books),
+                loaded: true,
+            });
+        } catch (error) {
+            console.error(error);
+
+            set({
+                loaded: false,
             });
         } finally {
             set({ loading: false });

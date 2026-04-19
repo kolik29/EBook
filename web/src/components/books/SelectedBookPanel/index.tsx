@@ -5,7 +5,7 @@ import SkipNextIcon from '@mui/icons-material/SkipNext';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DeleteIcon from '@mui/icons-material/Delete';
 import clsx from 'clsx';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useBooksStore } from '../../../store/books';
 import { deleteBook, updateCurrentPage } from '../../../api/books';
 import BookCover from '../BookCover';
@@ -15,12 +15,12 @@ const SelectedBookPanel = () => {
     const books = useBooksStore((state) => state.books);
 
     const selectedBook = useMemo(() => {
-        const book = books.find((book) => book.active) ?? null
-
-        setPage(book?.page.current ?? 1);
-
-        return book;
+        return books.find((book) => book.active) ?? null;
     }, [books]);
+
+    useEffect(() => {
+        setPage(selectedBook?.page.current ?? 1);
+    }, [selectedBook?.id, selectedBook?.page.current]);
 
     if (!selectedBook) {
         return null;
@@ -57,7 +57,6 @@ const SelectedBookPanel = () => {
                 <BookCover
                     src={selectedBook.img}
                     alt={selectedBook.title}
-                    borderRadius={4}
                 />
             </Box>
             <Box className='display__flex flex-direction__column align-items__center'>
