@@ -1,10 +1,13 @@
 #include "WebServerService.h"
+#include "EpubParserService.h"
 
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <SD.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 static WebServer server(80);
 
@@ -12,6 +15,15 @@ static File gUploadFile;
 static String gUploadFolder;
 static String gUploadOriginalFilename;
 static bool gUploadFailed = false;
+
+static void logFreeStack(const char *label) {
+    UBaseType_t words = uxTaskGetStackHighWaterMark(nullptr);
+    Serial.print("STACK ");
+    Serial.print(label);
+    Serial.print(": ");
+    Serial.print((uint32_t)words * sizeof(StackType_t));
+    Serial.println(" bytes free");
+}
 
 static String sanitizeFileName(const String &fileName) {
     String result = fileName;
@@ -328,10 +340,30 @@ bool WebServerService::begin(
                 return;
             }
 
+            logFreeStack("before epub parse");
+
             BookItem createdBook;
-            const String title = stripExtension(gUploadOriginalFilename);
-            const String author = "Unknown";
+
+            const String filePath = m_libraryService->getItemsPath() + "/" + gUploadFolder + "/original.epub";
+
+            EpubParserService epubParser(SD);
+            EpubMetadata metadata;
+
+            if (!epubParser.readMetadata(filePath, metadata)) {
+                Serial.println("WEB: failed to parse EPUB metadata, using fallback values");
+            }
+
+            const String title = metadata.title.isEmpty()
+                ? stripExtension(gUploadOriginalFilename)
+                : metadata.title;
+
+            const String author = metadata.author.isEmpty()
+                ? "Unknown"
+                : metadata.author;
+
             const String coverPath = "";
+
+            logFreeStack("after epub parse");
 
             if (!m_libraryService->addBook(
                     gUploadFolder,
