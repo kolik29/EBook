@@ -139,11 +139,13 @@ bool EpubParserService::extractZipEntryData(
     }
 
     if (!seekExact(file, entry.localHeaderOffset)) {
+        Serial.println("EPUB: failed to seek local header");
         return false;
     }
 
     uint8_t localHeader[30];
     if (!readExact(file, localHeader, sizeof(localHeader))) {
+        Serial.println("EPUB: failed to read local header");
         return false;
     }
 
@@ -156,33 +158,50 @@ bool EpubParserService::extractZipEntryData(
     const uint16_t extraLength = readLe16(localHeader + 28);
 
     if (!skipBytes(file, fileNameLength + extraLength)) {
+        Serial.println("EPUB: failed to skip local header fields");
         return false;
+    }
+
+    if (entry.method == 0) {
+        uint8_t *outputData = static_cast<uint8_t *>(malloc(entry.uncompressedSize));
+        if (!outputData) {
+            Serial.println("EPUB: failed to allocate output buffer for stored entry");
+            return false;
+        }
+
+        if (!readExact(file, outputData, entry.uncompressedSize)) {
+            Serial.println("EPUB: failed to read stored entry data");
+            free(outputData);
+            return false;
+        }
+
+        outData = outputData;
+        outSize = entry.uncompressedSize;
+        return true;
     }
 
     uint8_t *compressedData = static_cast<uint8_t *>(malloc(entry.compressedSize));
     if (!compressedData) {
+        Serial.println("EPUB: failed to allocate compressed buffer");
         return false;
     }
 
     if (!readExact(file, compressedData, entry.compressedSize)) {
+        Serial.println("EPUB: failed to read compressed entry data");
         free(compressedData);
         return false;
     }
 
     uint8_t *outputData = static_cast<uint8_t *>(malloc(entry.uncompressedSize));
     if (!outputData) {
+        Serial.println("EPUB: failed to allocate output buffer");
         free(compressedData);
         return false;
     }
 
     bool ok = false;
 
-    if (entry.method == 0) {
-        if (entry.compressedSize == entry.uncompressedSize) {
-            memcpy(outputData, compressedData, entry.uncompressedSize);
-            ok = true;
-        }
-    } else if (entry.method == 8) {
+    if (entry.method == 8) {
         const size_t result = tinfl_decompress_mem_to_mem(
             outputData,
             entry.uncompressedSize,
@@ -193,6 +212,11 @@ bool EpubParserService::extractZipEntryData(
 
         ok = (result != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)
             && (result == entry.uncompressedSize);
+
+        if (!ok) {
+            Serial.print("EPUB: deflate decompression failed, result=");
+            Serial.println(static_cast<unsigned long>(result));
+        }
     } else {
         Serial.print("EPUB: unsupported compression method: ");
         Serial.println(entry.method);
