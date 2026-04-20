@@ -2,6 +2,98 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <vector>
+
+namespace {
+    bool removeFileIfExists(fs::FS &fs, const String &path) {
+        if (path.isEmpty()) {
+            return true;
+        }
+
+        if (!fs.exists(path)) {
+            return true;
+        }
+
+        if (!fs.remove(path)) {
+            Serial.print("LIB: failed to remove file: ");
+            Serial.println(path);
+            return false;
+        }
+
+        Serial.print("LIB: removed file: ");
+        Serial.println(path);
+
+        return true;
+    }
+
+    bool isSafeBookFolderName(const String &folder) {
+        if (folder.isEmpty()) {
+            return false;
+        }
+
+        if (folder.indexOf('/') >= 0 || folder.indexOf('\\') >= 0) {
+            return false;
+        }
+
+        if (folder.indexOf("..") >= 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool removeDirRecursive(fs::FS &fs, const String &path) {
+        File dir = fs.open(path, "r");
+        if (!dir || !dir.isDirectory()) {
+            Serial.print("LIB: failed to open dir for removal: ");
+            Serial.println(path);
+            return false;
+        }
+
+        std::vector<String> entries;
+        File entry = dir.openNextFile();
+
+        while (entry) {
+            entries.push_back(String(entry.path()));
+            entry.close();
+            entry = dir.openNextFile();
+        }
+
+        dir.close();
+
+        for (const String &entryPath : entries) {
+            File current = fs.open(entryPath, "r");
+            const bool isDir = current && current.isDirectory();
+            current.close();
+
+            if (isDir) {
+                if (!removeDirRecursive(fs, entryPath)) {
+                    return false;
+                }
+            } else {
+                if (!fs.remove(entryPath)) {
+                    Serial.print("LIB: failed to remove file in dir: ");
+                    Serial.println(entryPath);
+                    return false;
+                }
+
+                Serial.print("LIB: removed file in dir: ");
+                Serial.println(entryPath);
+            }
+        }
+
+        if (!fs.rmdir(path)) {
+            Serial.print("LIB: failed to remove dir: ");
+            Serial.println(path);
+            return false;
+        }
+
+        Serial.print("LIB: removed dir: ");
+        Serial.println(path);
+
+        return true;
+    }
+}
 
 LibraryService::LibraryService(fs::FS &fs)
     : m_fs(fs) {
@@ -93,6 +185,12 @@ bool LibraryService::addBook(
     const String &coverPath,
     BookItem &outBook
 ) {
+    if (!isSafeBookFolderName(folder)) {
+        Serial.print("LIB: addBook failed, unsafe folder name: ");
+        Serial.println(folder);
+        return false;
+    }
+
     LibraryData library;
     if (!loadLibrary(library)) {
         Serial.println("LIB: addBook failed, cannot load library");
@@ -127,6 +225,78 @@ bool LibraryService::addBook(
     Serial.println(item.folder);
 
     return true;
+}
+
+bool LibraryService::deleteBook(uint32_t bookId) {
+    LibraryData library;
+    if (!loadLibrary(library)) {
+        Serial.println("LIB: deleteBook failed, cannot load library");
+        return false;
+    }
+
+    int foundIndex = -1;
+
+    for (size_t i = 0; i < library.books.size(); i++) {
+        if (library.books[i].id == bookId) {
+            foundIndex = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (foundIndex < 0) {
+        Serial.print("LIB: deleteBook failed, id not found: ");
+        Serial.println(bookId);
+        return false;
+    }
+
+    const BookItem removedBook = library.books[foundIndex];
+    library.books.erase(library.books.begin() + foundIndex);
+
+    if (library.activeBookFolder == removedBook.folder) {
+        library.activeBookFolder = library.books.empty()
+            ? ""
+            : library.books.front().folder;
+    }
+
+    if (!saveLibrary(library)) {
+        Serial.println("LIB: deleteBook failed, cannot save library");
+        return false;
+    }
+
+    bool cleanupOk = true;
+
+    if (!removedBook.cover.isEmpty()) {
+        cleanupOk = removeFileIfExists(m_fs, removedBook.cover) && cleanupOk;
+    }
+
+    cleanupOk = removeBookFolder(removedBook.folder) && cleanupOk;
+
+    if (!cleanupOk) {
+        Serial.println("LIB: deleteBook completed with cleanup errors");
+    }
+
+    Serial.print("LIB: book deleted, id=");
+    Serial.print(removedBook.id);
+    Serial.print(" folder=");
+    Serial.println(removedBook.folder);
+
+    return true;
+}
+
+bool LibraryService::removeBookFolder(const String &folder) {
+    if (!isSafeBookFolderName(folder)) {
+        Serial.print("LIB: unsafe folder name: ");
+        Serial.println(folder);
+        return false;
+    }
+
+    const String bookDir = getItemsPath() + "/" + folder;
+
+    if (!m_fs.exists(bookDir)) {
+        return true;
+    }
+
+    return removeDirRecursive(m_fs, bookDir);
 }
 
 bool LibraryService::ensureBaseFolders() {
@@ -189,19 +359,40 @@ bool LibraryService::readFile(const String &path, String &outContent) {
 }
 
 bool LibraryService::writeFile(const String &path, const String &content) {
-    File file = m_fs.open(path, "w");
+    const String tmpPath = path + ".tmp";
+
+    if (m_fs.exists(tmpPath)) {
+        m_fs.remove(tmpPath);
+    }
+
+    File file = m_fs.open(tmpPath, "w");
     if (!file) {
-        Serial.print("LIB: failed to open file for write: ");
-        Serial.println(path);
+        Serial.print("LIB: failed to open temp file for write: ");
+        Serial.println(tmpPath);
         return false;
     }
 
-    size_t written = file.print(content);
+    const size_t written = file.print(content);
     file.close();
 
     if (written != content.length()) {
-        Serial.print("LIB: failed to fully write file: ");
+        Serial.print("LIB: failed to fully write temp file: ");
+        Serial.println(tmpPath);
+        m_fs.remove(tmpPath);
+        return false;
+    }
+
+    if (m_fs.exists(path) && !m_fs.remove(path)) {
+        Serial.print("LIB: failed to remove old file: ");
         Serial.println(path);
+        m_fs.remove(tmpPath);
+        return false;
+    }
+
+    if (!m_fs.rename(tmpPath, path)) {
+        Serial.print("LIB: failed to rename temp file to final: ");
+        Serial.println(path);
+        m_fs.remove(tmpPath);
         return false;
     }
 

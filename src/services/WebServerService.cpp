@@ -198,15 +198,15 @@ static void sendBooksFromLibrary(LibraryService *libraryService) {
 
     for (const BookItem &item : library.books) {
         JsonObject bookObj = books.add<JsonObject>();
-        bookObj["id"]     = item.id;
+        bookObj["id"] = item.id;
         bookObj["folder"] = item.folder;
-        bookObj["title"]  = item.title;
+        bookObj["title"] = item.title;
         bookObj["author"] = item.author;
-        bookObj["img"]    = item.cover;
+        bookObj["img"] = item.cover;
         bookObj["active"] = (item.folder == library.activeBookFolder);
 
         JsonObject pageObj = bookObj["page"].to<JsonObject>();
-        pageObj["total"]   = item.page.total;
+        pageObj["total"] = item.page.total;
         pageObj["current"] = item.page.current;
     }
 
@@ -247,6 +247,82 @@ static void sendBookPaginationFromLibrary(LibraryService *libraryService, int bo
     server.send(404, "application/json; charset=utf-8", R"({"ok":false,"message":"book not found"})");
 }
 
+static void closeUploadFileIfOpen() {
+    if (gUploadFile) {
+        gUploadFile.close();
+        gUploadFile = File();
+    }
+}
+
+static void resetUploadState() {
+    closeUploadFileIfOpen();
+    gUploadFolder = "";
+    gUploadOriginalFilename = "";
+    gUploadFailed = false;
+}
+
+static String buildUploadBookDir(LibraryService *libraryService) {
+    if (!libraryService || gUploadFolder.isEmpty()) {
+        return "";
+    }
+
+    return libraryService->getItemsPath() + "/" + gUploadFolder;
+}
+
+static String buildUploadFinalPath(LibraryService *libraryService) {
+    const String bookDir = buildUploadBookDir(libraryService);
+    if (bookDir.isEmpty()) {
+        return "";
+    }
+
+    return bookDir + "/original.epub";
+}
+
+static String buildUploadTempPath(LibraryService *libraryService) {
+    const String finalPath = buildUploadFinalPath(libraryService);
+    if (finalPath.isEmpty()) {
+        return "";
+    }
+
+    return finalPath + ".part";
+}
+
+static bool removeSdFileIfExists(const String &path) {
+    if (path.isEmpty()) {
+        return true;
+    }
+
+    if (!SD.exists(path)) {
+        return true;
+    }
+
+    if (!SD.remove(path)) {
+        Serial.print("WEB: failed to remove file: ");
+        Serial.println(path);
+        return false;
+    }
+
+    Serial.print("WEB: removed file: ");
+    Serial.println(path);
+
+    return true;
+}
+
+static void cleanupUploadArtifacts(LibraryService *libraryService, const String &coverPath = "") {
+    closeUploadFileIfOpen();
+
+    if (!coverPath.isEmpty()) {
+        removeSdFileIfExists(coverPath);
+    }
+
+    if (libraryService && !gUploadFolder.isEmpty()) {
+        if (!libraryService->removeBookFolder(gUploadFolder)) {
+            Serial.print("WEB: failed to cleanup upload folder: ");
+            Serial.println(gUploadFolder);
+        }
+    }
+}
+
 WebServerService::WebServerService() {
 }
 
@@ -280,6 +356,11 @@ bool WebServerService::begin(
 
         if (LittleFS.exists("/index.html")) {
             File file = LittleFS.open("/index.html", "r");
+            if (!file || file.isDirectory()) {
+                server.send(404, "text/plain", "Not found");
+                return;
+            }
+
             server.streamFile(file, "text/html; charset=utf-8");
             file.close();
 
@@ -337,32 +418,56 @@ bool WebServerService::begin(
                 m_onActivity();
             }
 
-            if (gUploadFile) {
-                gUploadFile.close();
-            }
+            closeUploadFileIfOpen();
 
-            if (gUploadFailed) {
-                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"upload failed"})");
-                Serial.println("WEB: upload book failed");
-
-                gUploadFolder = "";
-                gUploadOriginalFilename = "";
-                gUploadFailed = false;
+            if (!m_libraryService) {
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"library service not set"})");
+                Serial.println("WEB: upload failed, library service not set");
+                resetUploadState();
                 return;
             }
 
-            if (!m_libraryService) {
-                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"library service not set"})");
-                Serial.println("WEB: upload failed, library service not set");
+            if (gUploadFailed) {
+                cleanupUploadArtifacts(m_libraryService);
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"upload failed"})");
+                Serial.println("WEB: upload book failed");
+                resetUploadState();
+                return;
+            }
 
-                gUploadFolder = "";
-                gUploadOriginalFilename = "";
+            const String tempPath = buildUploadTempPath(m_libraryService);
+            const String epubPath = buildUploadFinalPath(m_libraryService);
+
+            if (tempPath.isEmpty() || epubPath.isEmpty() || !SD.exists(tempPath)) {
+                cleanupUploadArtifacts(m_libraryService);
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"temporary upload file not found"})");
+                Serial.println("WEB: upload failed, temp file not found");
+                resetUploadState();
+                return;
+            }
+
+            if (SD.exists(epubPath) && !SD.remove(epubPath)) {
+                cleanupUploadArtifacts(m_libraryService);
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"failed to replace existing epub file"})");
+                Serial.println("WEB: upload failed, cannot remove old epub");
+                resetUploadState();
+                return;
+            }
+
+            if (!SD.rename(tempPath, epubPath)) {
+                cleanupUploadArtifacts(m_libraryService);
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"failed to finalize uploaded file"})");
+                Serial.println("WEB: upload failed, cannot rename temp epub");
+                resetUploadState();
                 return;
             }
 
             BookItem createdBook;
-
-            const String epubPath = m_libraryService->getItemsPath() + "/" + gUploadFolder + "/original.epub";
 
             EpubParserService epubParser(SD);
             EpubMetadata metadata;
@@ -397,11 +502,11 @@ bool WebServerService::begin(
                     coverPath,
                     createdBook
                 )) {
-                server.send(500, "application/json; charset=utf-8", R"({"ok":false,"message":"failed to add book to library"})");
+                cleanupUploadArtifacts(m_libraryService, coverPath);
+                server.send(500, "application/json; charset=utf-8",
+                    R"({"ok":false,"message":"failed to add book to library"})");
                 Serial.println("WEB: upload failed, cannot update library");
-
-                gUploadFolder = "";
-                gUploadOriginalFilename = "";
+                resetUploadState();
                 return;
             }
 
@@ -415,8 +520,7 @@ bool WebServerService::begin(
             server.send(200, "application/json; charset=utf-8", response);
             Serial.println("WEB: upload book completed");
 
-            gUploadFolder = "";
-            gUploadOriginalFilename = "";
+            resetUploadState();
         },
         [this]() {
             HTTPUpload &upload = server.upload();
@@ -427,15 +531,23 @@ bool WebServerService::begin(
             }
 
             if (upload.status == UPLOAD_FILE_START) {
+                resetUploadState();
+
                 gUploadFailed = false;
                 gUploadOriginalFilename = sanitizeFileName(upload.filename);
                 gUploadFolder = generateBookFolderId();
 
-                const String bookDir = m_libraryService->getItemsPath() + "/" + gUploadFolder;
-                const String filePath = bookDir + "/original.epub";
+                const String bookDir = buildUploadBookDir(m_libraryService);
+                const String tempPath = buildUploadTempPath(m_libraryService);
 
                 Serial.print("WEB: upload started: ");
                 Serial.println(gUploadOriginalFilename);
+
+                if (bookDir.isEmpty() || tempPath.isEmpty()) {
+                    Serial.println("WEB: upload failed, invalid upload paths");
+                    gUploadFailed = true;
+                    return;
+                }
 
                 if (!SD.exists(bookDir)) {
                     if (!SD.mkdir(bookDir)) {
@@ -446,27 +558,33 @@ bool WebServerService::begin(
                     }
                 }
 
-                gUploadFile = SD.open(filePath, FILE_WRITE);
-                if (!gUploadFile) {
-                    Serial.print("WEB: failed to open upload file: ");
-                    Serial.println(filePath);
+                if (SD.exists(tempPath) && !SD.remove(tempPath)) {
+                    Serial.print("WEB: failed to remove temp upload file: ");
+                    Serial.println(tempPath);
                     gUploadFailed = true;
                     return;
                 }
 
-                Serial.print("WEB: upload file path: ");
-                Serial.println(filePath);
+                gUploadFile = SD.open(tempPath, "w");
+                if (!gUploadFile) {
+                    Serial.print("WEB: failed to open upload temp file: ");
+                    Serial.println(tempPath);
+                    gUploadFailed = true;
+                    return;
+                }
+
+                Serial.print("WEB: upload temp file path: ");
+                Serial.println(tempPath);
             } else if (upload.status == UPLOAD_FILE_WRITE) {
                 if (gUploadFailed || !gUploadFile) {
                     return;
                 }
 
-                size_t written = gUploadFile.write(upload.buf, upload.currentSize);
+                const size_t written = gUploadFile.write(upload.buf, upload.currentSize);
                 if (written != upload.currentSize) {
                     Serial.println("WEB: upload write failed");
                     gUploadFailed = true;
-                    gUploadFile.close();
-                    gUploadFile = File();
+                    closeUploadFileIfOpen();
                     return;
                 }
 
@@ -474,6 +592,7 @@ bool WebServerService::begin(
                 Serial.println(upload.currentSize);
             } else if (upload.status == UPLOAD_FILE_END) {
                 if (gUploadFile) {
+                    gUploadFile.flush();
                     gUploadFile.close();
                     gUploadFile = File();
                 }
@@ -481,11 +600,7 @@ bool WebServerService::begin(
                 Serial.print("WEB: upload finished, total size: ");
                 Serial.println(upload.totalSize);
             } else if (upload.status == UPLOAD_FILE_ABORTED) {
-                if (gUploadFile) {
-                    gUploadFile.close();
-                    gUploadFile = File();
-                }
-
+                closeUploadFileIfOpen();
                 gUploadFailed = true;
                 Serial.println("WEB: upload aborted");
             }
@@ -511,7 +626,20 @@ bool WebServerService::begin(
                 Serial.print("WEB: delete book requested, id=");
                 Serial.println(bookId);
 
-                server.send(200, "application/json; charset=utf-8", R"({"ok":true,"message":"book deleted"})");
+                if (!m_libraryService) {
+                    server.send(500, "application/json; charset=utf-8",
+                        R"({"ok":false,"message":"library service not set"})");
+                    return;
+                }
+
+                if (!m_libraryService->deleteBook(static_cast<uint32_t>(bookId))) {
+                    server.send(500, "application/json; charset=utf-8",
+                        R"({"ok":false,"message":"failed to delete book"})");
+                    return;
+                }
+
+                server.send(200, "application/json; charset=utf-8",
+                    R"({"ok":true,"message":"book deleted"})");
                 return;
             }
         }

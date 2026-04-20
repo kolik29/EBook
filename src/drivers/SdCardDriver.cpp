@@ -107,7 +107,6 @@ void SdCardDriver::listDir(const char *path, uint8_t levels, Stream &out) const 
         if (file.isDirectory()) {
             out.print("[DIR] ");
             out.println(file.name());
-
             if (levels > 0) {
                 listDir(file.path(), levels - 1, out);
             }
@@ -118,9 +117,10 @@ void SdCardDriver::listDir(const char *path, uint8_t levels, Stream &out) const 
             out.print(file.size());
             out.println(" bytes)");
         }
-
+        file.close();
         file = root.openNextFile();
     }
+    root.close();
 }
 
 fs::FS &SdCardDriver::fs() {

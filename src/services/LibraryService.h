@@ -20,6 +20,9 @@ public:
         BookItem &outBook
     );
 
+    bool deleteBook(uint32_t bookId);
+    bool removeBookFolder(const String &folder);
+
     String getItemsPath() const;
     String getCoverPath() const;
     String getLibraryPath() const;
