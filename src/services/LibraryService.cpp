@@ -283,6 +283,56 @@ bool LibraryService::deleteBook(uint32_t bookId) {
     return true;
 }
 
+bool LibraryService::setActiveBookAndCurrentPage(uint32_t bookId, uint32_t currentPage, BookItem &outBook) {
+    LibraryData library;
+    if (!loadLibrary(library)) {
+        Serial.println("LIB: setActiveBookAndCurrentPage failed, cannot load library");
+        return false;
+    }
+
+    BookItem *targetBook = nullptr;
+
+    for (BookItem &item : library.books) {
+        if (item.id == bookId) {
+            targetBook = &item;
+            break;
+        }
+    }
+
+    if (!targetBook) {
+        Serial.print("LIB: setActiveBookAndCurrentPage failed, id not found: ");
+        Serial.println(bookId);
+        return false;
+    }
+
+    if (currentPage < 1) {
+        currentPage = 1;
+    }
+
+    if (targetBook->page.total > 0 && currentPage > targetBook->page.total) {
+        currentPage = targetBook->page.total;
+    }
+
+    targetBook->page.current = currentPage;
+    library.activeBookFolder = targetBook->folder;
+
+    if (!saveLibrary(library)) {
+        Serial.println("LIB: setActiveBookAndCurrentPage failed, cannot save library");
+        return false;
+    }
+
+    outBook = *targetBook;
+
+    Serial.print("LIB: active book set, id=");
+    Serial.print(outBook.id);
+    Serial.print(" folder=");
+    Serial.print(outBook.folder);
+    Serial.print(" currentPage=");
+    Serial.println(outBook.page.current);
+
+    return true;
+}
+
 bool LibraryService::removeBookFolder(const String &folder) {
     if (!isSafeBookFolderName(folder)) {
         Serial.print("LIB: unsafe folder name: ");

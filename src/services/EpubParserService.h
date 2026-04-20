@@ -54,6 +54,7 @@ private:
     ) const;
 
     String extractXmlTagValue(const String &xml, const char *tagName) const;
+    String extractXmlTagValuesJoined(const String &xml, const char *tagName) const;
     String extractXmlAttributeValue(const String &xml, int tagStartPos, const char *attributeName) const;
     String decodeXmlEntities(String value) const;
 

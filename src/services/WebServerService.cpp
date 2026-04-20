@@ -179,6 +179,39 @@ static bool extractBookPaginationId(const String &uri, int &bookId) {
     return true;
 }
 
+static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage) {
+    currentPage = 0;
+
+    if (body.isEmpty()) {
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+        if (doc["currentPage"].is<uint32_t>()) {
+            currentPage = doc["currentPage"].as<uint32_t>();
+            return true;
+        }
+
+        if (doc["currentPage"].is<int>()) {
+            const int value = doc["currentPage"].as<int>();
+            if (value >= 1) {
+                currentPage = static_cast<uint32_t>(value);
+                return true;
+            }
+        }
+    }
+
+    if (isDigitsOnly(body)) {
+        currentPage = static_cast<uint32_t>(body.toInt());
+        return currentPage >= 1;
+    }
+
+    return false;
+}
+
 static void sendBooksFromLibrary(LibraryService *libraryService) {
     if (!libraryService) {
         server.send(500, "application/json; charset=utf-8",
@@ -647,14 +680,46 @@ bool WebServerService::begin(
         if (method == HTTP_PATCH) {
             int bookId = 0;
             if (extractBookId(uri, bookId)) {
-                String body = server.arg("plain");
+                const String body = server.arg("plain");
 
                 Serial.print("WEB: update current page requested, id=");
                 Serial.println(bookId);
                 Serial.print("WEB: patch body: ");
                 Serial.println(body);
 
-                server.send(200, "application/json; charset=utf-8", R"({"ok":true,"message":"book updated"})");
+                if (!m_libraryService) {
+                    server.send(500, "application/json; charset=utf-8",
+                        R"({"ok":false,"message":"library service not set"})");
+                    return;
+                }
+
+                uint32_t currentPage = 0;
+                if (!extractCurrentPageFromBody(body, currentPage)) {
+                    server.send(400, "application/json; charset=utf-8",
+                        R"({"ok":false,"message":"invalid currentPage"})");
+                    return;
+                }
+
+                BookItem updatedBook;
+                if (!m_libraryService->setActiveBookAndCurrentPage(
+                        static_cast<uint32_t>(bookId),
+                        currentPage,
+                        updatedBook
+                    )) {
+                    server.send(404, "application/json; charset=utf-8",
+                        R"({"ok":false,"message":"book not found or failed to save state"})");
+                    return;
+                }
+
+                String response = "{";
+                response += "\"ok\":true,";
+                response += "\"message\":\"book updated\",";
+                response += "\"id\":" + String(updatedBook.id) + ",";
+                response += "\"folder\":\"" + updatedBook.folder + "\",";
+                response += "\"currentPage\":" + String(updatedBook.page.current);
+                response += "}";
+
+                server.send(200, "application/json; charset=utf-8", response);
                 return;
             }
         }

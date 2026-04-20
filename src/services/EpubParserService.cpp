@@ -433,10 +433,10 @@ bool EpubParserService::parsePackageMetadata(
         outMetadata.title = extractXmlTagValue(packageXml, "title");
     }
 
-    outMetadata.author = extractXmlTagValue(packageXml, "dc:creator");
+    outMetadata.author = extractXmlTagValuesJoined(packageXml, "dc:creator");
 
     if (outMetadata.author.isEmpty()) {
-        outMetadata.author = extractXmlTagValue(packageXml, "creator");
+        outMetadata.author = extractXmlTagValuesJoined(packageXml, "creator");
     }
 
     outMetadata.coverInternalPath = "";
@@ -577,6 +577,57 @@ String EpubParserService::extractXmlTagValue(const String &xml, const char *tagN
     value.trim();
 
     return value;
+}
+
+String EpubParserService::extractXmlTagValuesJoined(const String &xml, const char *tagName) const {
+    if (!tagName || !*tagName) {
+        return "";
+    }
+
+    const String openTagStart = "<" + String(tagName);
+    const String closeTag = "</" + String(tagName) + ">";
+
+    String result = "";
+    int searchPos = 0;
+
+    while (true) {
+        const int openPos = xml.indexOf(openTagStart, searchPos);
+        if (openPos < 0) {
+            break;
+        }
+
+        const int contentStart = xml.indexOf('>', openPos);
+        if (contentStart < 0) {
+            break;
+        }
+
+        const int closePos = xml.indexOf(closeTag, contentStart + 1);
+        if (closePos < 0) {
+            break;
+        }
+
+        String value = xml.substring(contentStart + 1, closePos);
+        value.trim();
+
+        if (value.startsWith("<![CDATA[") && value.endsWith("]]>") && value.length() >= 12) {
+            value = value.substring(9, value.length() - 3);
+        }
+
+        value = decodeXmlEntities(value);
+        value.trim();
+
+        if (!value.isEmpty()) {
+            if (!result.isEmpty()) {
+                result += ", ";
+            }
+
+            result += value;
+        }
+
+        searchPos = closePos + closeTag.length();
+    }
+
+    return result;
 }
 
 String EpubParserService::extractXmlAttributeValue(
