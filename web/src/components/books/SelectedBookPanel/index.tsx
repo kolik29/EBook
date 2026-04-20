@@ -14,6 +14,8 @@ const SelectedBookPanel = () => {
     const [page, setPage] = useState(1);
     const books = useBooksStore((state) => state.books);
 
+    const reloadBooks = useBooksStore((state) => state.reloadBooks);
+
     const selectedBook = useMemo(() => {
         return books.find((book) => book.active) ?? null;
     }, [books]);
@@ -47,7 +49,7 @@ const SelectedBookPanel = () => {
     const handleDeleteBook = async () => {
         if (confirm('Are you sure you want to delete this book?')) {
             await deleteBook(selectedBook.id);
-            await useBooksStore.getState().loadBooks();
+            await reloadBooks();
         }
     }
 
