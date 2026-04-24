@@ -22,7 +22,15 @@ App::App()
           Pins::SPI_MOSI,
           Pins::SD_CS),
       m_ledService(Pins::RGB_LED),
-      m_wifiService(m_ledService) {
+      m_wifiService(m_ledService),
+      m_display(
+          Pins::EPD_PWR,
+          Pins::EPD_BUSY,
+          Pins::EPD_RST,
+          Pins::EPD_DC,
+          Pins::EPD_CS,
+          Pins::EPD_CLK,
+          Pins::EPD_DIN) {
 }
 
 void App::begin() {
@@ -37,6 +45,11 @@ void App::begin() {
     Serial.println();
     Serial.println("App started");
     Serial.println("Button test initialized");
+
+    Serial.println("Initializing display...");
+
+    m_display.begin();
+    m_display.showMessage("KoliK e-book", "Display driver initialized successfully.");
 
     Serial.println("Initializing SD card...");
     if (m_sdCard.begin()) {

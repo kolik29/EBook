@@ -5,6 +5,7 @@
 #include "../services/WifiService.h"
 #include "../services/LedService.h"
 #include "../services/LibraryService.h"
+#include "../drivers/DisplayDriver.h"
 
 class App {
 public:
@@ -19,6 +20,7 @@ private:
     SdCardDriver m_sdCard;
     LedService m_ledService;
     WifiService m_wifiService;
+    DisplayDriver m_display;
     LibraryService *m_libraryService = nullptr;
 
     void handleNextButtonEvent(const ButtonEvent &event);
