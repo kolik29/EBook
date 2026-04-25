@@ -38,7 +38,10 @@ private:
     int m_csPin;
     int m_clkPin;
     int m_dinPin;
+    int m_partialUpdateCounter = 0;
 
     void powerOn();
     void renderWrappedText(const String &text, int x, int y, int maxCharsPerLine, int lineHeight);
+    void renderPreformattedText(const String &text, int x, int y, int lineHeight, int maxLines);
+    void wake();
 };

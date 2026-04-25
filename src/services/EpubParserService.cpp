@@ -806,6 +806,339 @@ bool EpubParserService::isImageMediaType(const String &mediaType) const {
         || mediaType == "image/svg+xml";
 }
 
+namespace {
+    struct ManifestItem {
+        String id;
+        String href;
+        String mediaType;
+    };
+
+    String extractXmlBlock(const String &xml, const String &tagName) {
+        const String openTag = "<" + tagName;
+        const String closeTag = "</" + tagName + ">";
+
+        const int openPos = xml.indexOf(openTag);
+        if (openPos < 0) {
+            return "";
+        }
+
+        const int openEnd = xml.indexOf('>', openPos);
+        if (openEnd < 0) {
+            return "";
+        }
+
+        const int closePos = xml.indexOf(closeTag, openEnd + 1);
+        if (closePos < 0) {
+            return "";
+        }
+
+        return xml.substring(openEnd + 1, closePos);
+    }
+
+    ManifestItem *findManifestItemById(std::vector<ManifestItem> &items, const String &id) {
+        for (ManifestItem &item : items) {
+            if (item.id == id) {
+                return &item;
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool looksLikeTextDocument(const ManifestItem &item) {
+        String mediaType = item.mediaType;
+        String href = item.href;
+
+        mediaType.toLowerCase();
+        href.toLowerCase();
+
+        return mediaType == "application/xhtml+xml"
+            || mediaType == "text/html"
+            || mediaType == "application/xml"
+            || href.endsWith(".xhtml")
+            || href.endsWith(".html")
+            || href.endsWith(".htm");
+    }
+
+    String cleanupHtmlToText(String html) {
+        auto removeBlocks = [](String &s, const char *open, const char *close) {
+            while (true) {
+                String lower = s; lower.toLowerCase();
+                int start = lower.indexOf(open);
+                if (start < 0) break;
+                int end = lower.indexOf(close, start);
+                if (end < 0) break;
+                s.remove(start, end + strlen(close) - start);
+            }
+        };
+        removeBlocks(html, "<style",  "</style>");
+        removeBlocks(html, "<script", "</script>");
+        
+        html.replace("\r", "\n");
+        html.replace("&nbsp;", " ");
+        html.replace("&amp;", "&");
+        html.replace("&quot;", "\"");
+        html.replace("&apos;", "'");
+        html.replace("&lt;", "<");
+        html.replace("&gt;", ">");
+        html.replace("&#39;", "'");
+        html.replace("&#34;", "\"");
+
+        String result = "";
+        bool insideTag = false;
+        bool lastWasSpace = false;
+        bool lastWasNewLine = false;
+
+        for (int i = 0; i < html.length(); i++) {
+            const char c = html[i];
+
+            if (c == '<') {
+                insideTag = true;
+
+                int tagPreviewEnd = i + 12;
+
+                if (tagPreviewEnd > static_cast<int>(html.length())) {
+                    tagPreviewEnd = html.length();
+                }
+
+                String tag = html.substring(i, tagPreviewEnd);
+                tag.toLowerCase();
+
+                if (tag.startsWith("<p")
+                    || tag.startsWith("</p")
+                    || tag.startsWith("<br")
+                    || tag.startsWith("<div")
+                    || tag.startsWith("</div")
+                    || tag.startsWith("<h1")
+                    || tag.startsWith("</h1")
+                    || tag.startsWith("<h2")
+                    || tag.startsWith("</h2")
+                    || tag.startsWith("<h3")
+                    || tag.startsWith("</h3")) {
+                    if (!lastWasNewLine) {
+                        result += '\n';
+                        lastWasNewLine = true;
+                        lastWasSpace = false;
+                    }
+                }
+
+                continue;
+            }
+
+            if (c == '>') {
+                insideTag = false;
+                continue;
+            }
+
+            if (insideTag) {
+                continue;
+            }
+
+            if (c == '\n' || c == '\t' || c == ' ') {
+                if (!lastWasSpace && !lastWasNewLine) {
+                    result += ' ';
+                    lastWasSpace = true;
+                }
+
+                continue;
+            }
+
+            result += c;
+            lastWasSpace = false;
+            lastWasNewLine = false;
+        }
+
+        result.trim();
+
+        while (result.indexOf("\n\n\n") >= 0) {
+            result.replace("\n\n\n", "\n\n");
+        }
+
+        return result;
+    }
+}
+
+bool EpubParserService::parseBookStructure(
+    const String &epubPath,
+    EpubBookStructure &structure
+) {
+    structure = EpubBookStructure();
+
+    File epubFile = m_fs.open(epubPath, "r");
+    if (!epubFile || epubFile.isDirectory()) {
+        Serial.print("EPUB: failed to open file: ");
+        Serial.println(epubPath);
+        return false;
+    }
+
+    ZipEntryInfo containerEntry;
+    if (!findZipEntry(epubFile, "META-INF/container.xml", containerEntry)) {
+        Serial.println("EPUB: META-INF/container.xml not found");
+        epubFile.close();
+        return false;
+    }
+
+    String containerXml;
+    if (!extractZipEntryText(epubFile, containerEntry, 32 * 1024, containerXml)) {
+        Serial.println("EPUB: failed to extract container.xml");
+        epubFile.close();
+        return false;
+    }
+
+    String packagePath;
+    if (!findRootFilePath(containerXml, packagePath)) {
+        Serial.println("EPUB: rootfile path not found");
+        epubFile.close();
+        return false;
+    }
+
+    ZipEntryInfo packageEntry;
+    if (!findZipEntry(epubFile, packagePath.c_str(), packageEntry)) {
+        Serial.print("EPUB: package file not found: ");
+        Serial.println(packagePath);
+        epubFile.close();
+        return false;
+    }
+
+    String packageXml;
+    if (!extractZipEntryText(epubFile, packageEntry, 512 * 1024, packageXml)) {
+        Serial.print("EPUB: failed to extract package file: ");
+        Serial.println(packagePath);
+        epubFile.close();
+        return false;
+    }
+
+    EpubMetadata metadata;
+    parsePackageMetadata(packageXml, packagePath, metadata);
+
+    structure.packagePath = packagePath;
+    structure.title = metadata.title;
+    structure.author = metadata.author;
+
+    std::vector<ManifestItem> manifestItems;
+
+    const String manifestXml = extractXmlBlock(packageXml, "manifest");
+    int searchPos = 0;
+
+    while (true) {
+        const int itemPos = manifestXml.indexOf("<item", searchPos);
+        if (itemPos < 0) {
+            break;
+        }
+
+        const int tagEnd = manifestXml.indexOf('>', itemPos);
+        if (tagEnd < 0) {
+            break;
+        }
+
+        ManifestItem item;
+        item.id = extractXmlAttributeValue(manifestXml, itemPos, "id");
+        item.href = extractXmlAttributeValue(manifestXml, itemPos, "href");
+        item.mediaType = extractXmlAttributeValue(manifestXml, itemPos, "media-type");
+
+        if (!item.id.isEmpty() && !item.href.isEmpty()) {
+            manifestItems.push_back(item);
+        }
+
+        searchPos = tagEnd + 1;
+    }
+
+    const String spineXml = extractXmlBlock(packageXml, "spine");
+    searchPos = 0;
+
+    while (true) {
+        const int itemRefPos = spineXml.indexOf("<itemref", searchPos);
+        if (itemRefPos < 0) {
+            break;
+        }
+
+        const int tagEnd = spineXml.indexOf('>', itemRefPos);
+        if (tagEnd < 0) {
+            break;
+        }
+
+        const String idRef = extractXmlAttributeValue(spineXml, itemRefPos, "idref");
+        ManifestItem *manifestItem = findManifestItemById(manifestItems, idRef);
+
+        if (manifestItem && looksLikeTextDocument(*manifestItem)) {
+            EpubSpineItem spineItem;
+            spineItem.id = idRef;
+            spineItem.href = manifestItem->href;
+            spineItem.path = resolveRelativePath(packagePath, manifestItem->href);
+
+            if (!spineItem.path.isEmpty()) {
+                structure.spine.push_back(spineItem);
+            }
+        }
+
+        searchPos = tagEnd + 1;
+    }
+
+    epubFile.close();
+
+    Serial.print("EPUB: package path = ");
+    Serial.println(structure.packagePath);
+
+    Serial.print("EPUB: title = ");
+    Serial.println(structure.title);
+
+    Serial.print("EPUB: author = ");
+    Serial.println(structure.author);
+
+    Serial.print("EPUB: spine items = ");
+    Serial.println(static_cast<int>(structure.spine.size()));
+
+    return !structure.spine.empty();
+}
+
+bool EpubParserService::readSpineItemText(
+    const String &epubPath,
+    const EpubSpineItem &item,
+    String &text
+) {
+    text = "";
+
+    if (item.path.isEmpty()) {
+        Serial.println("EPUB: empty spine item path");
+        return false;
+    }
+
+    File epubFile = m_fs.open(epubPath, "r");
+    if (!epubFile || epubFile.isDirectory()) {
+        Serial.print("EPUB: failed to open file: ");
+        Serial.println(epubPath);
+        return false;
+    }
+
+    ZipEntryInfo spineEntry;
+    if (!findZipEntry(epubFile, item.path.c_str(), spineEntry)) {
+        Serial.print("EPUB: spine entry not found: ");
+        Serial.println(item.path);
+        epubFile.close();
+        return false;
+    }
+
+    String html;
+    if (!extractZipEntryText(epubFile, spineEntry, 512 * 1024, html)) {
+        Serial.print("EPUB: failed to extract spine entry: ");
+        Serial.println(item.path);
+        epubFile.close();
+        return false;
+    }
+
+    epubFile.close();
+
+    text = cleanupHtmlToText(html);
+
+    Serial.print("EPUB: read spine item: ");
+    Serial.println(item.path);
+
+    Serial.print("EPUB: text length = ");
+    Serial.println(text.length());
+
+    return !text.isEmpty();
+}
+
 bool EpubParserService::extractCoverToFile(
     const String &epubPath,
     const EpubMetadata &metadata,

@@ -40,7 +40,7 @@ void DisplayDriver::begin() {
 }
 
 void DisplayDriver::showMessage(const String &title, const String &message) {
-    powerOn();
+    wake();
 
     m_display.setFullWindow();
     m_display.firstPage();
@@ -63,25 +63,77 @@ void DisplayDriver::showMessage(const String &title, const String &message) {
 void DisplayDriver::showTextPage(const String &title, const String &text, int page, int totalPages) {
     powerOn();
 
-    m_display.setFullWindow();
+    const bool canUsePartial = m_display.epd2.hasPartialUpdate;
+    const bool needFullRefresh = m_partialUpdateCounter >= 15;
+
+    if (canUsePartial && !needFullRefresh) {
+        Serial.println("DISPLAY: partial update");
+
+        m_display.setPartialWindow(
+            0,
+            0,
+            m_display.width(),
+            m_display.height()
+        );
+
+        m_partialUpdateCounter++;
+    } else {
+        Serial.println("DISPLAY: full update");
+
+        m_display.setFullWindow();
+        m_partialUpdateCounter = 0;
+    }
+
     m_display.firstPage();
+
+    const int screenW = m_display.width();
+    const int screenH = m_display.height();
+
+    const int marginLeft = 14;
+    const int marginRight = 14;
+
+    const int titleY = 34;
+    const int titleLineY = 48;
+
+    const int textX = 14;
+    const int textY = 72;
+    const int lineHeight = 24;
+    const int maxLines = 29;
+
+    const int footerLineY = screenH - 30;
+    const int footerTextY = screenH - 7;
 
     do {
         m_display.fillScreen(GxEPD_WHITE);
         m_display.setTextColor(GxEPD_BLACK);
 
+        // Заголовок
         m_display.setFont(&FreeMonoBold9pt7b);
-        m_display.setCursor(30, 40);
+        m_display.setCursor(marginLeft, titleY);
         m_display.print(title);
 
-        m_display.drawLine(30, 58, 760, 58, GxEPD_BLACK);
+        m_display.drawLine(
+            marginLeft,
+            titleLineY,
+            screenW - marginRight,
+            titleLineY,
+            GxEPD_BLACK
+        );
 
+        // Основной текст
         m_display.setFont(&FreeMono9pt7b);
-        renderWrappedText(text, 30, 90, 68, 22);
+        renderPreformattedText(text, textX, textY, lineHeight, maxLines);
 
-        m_display.drawLine(30, 445, 760, 445, GxEPD_BLACK);
+        // Подвал
+        m_display.drawLine(
+            marginLeft,
+            footerLineY,
+            screenW - marginRight,
+            footerLineY,
+            GxEPD_BLACK
+        );
 
-        m_display.setCursor(30, 470);
+        m_display.setCursor(marginLeft, footerTextY);
         m_display.print("Page ");
         m_display.print(page);
         m_display.print(" / ");
@@ -128,4 +180,48 @@ void DisplayDriver::renderWrappedText(const String &text, int x, int y, int maxC
             break;
         }
     }
+}
+
+void DisplayDriver::renderPreformattedText(
+    const String &text,
+    int x,
+    int y,
+    int lineHeight,
+    int maxLines
+) {
+    int cursorY = y;
+    int lineCount = 0;
+    int start = 0;
+
+    while (start <= text.length() && lineCount < maxLines) {
+        int end = text.indexOf('\n', start);
+
+        if (end < 0) {
+            end = text.length();
+        }
+
+        String line = text.substring(start, end);
+        line.trim();
+
+        if (!line.isEmpty()) {
+            m_display.setCursor(x, cursorY);
+            m_display.print(line);
+        }
+
+        cursorY += lineHeight;
+        lineCount++;
+
+        if (end >= text.length()) {
+            break;
+        }
+
+        start = end + 1;
+    }
+}
+
+void DisplayDriver::wake() {
+    powerOn();
+
+    m_display.init(115200, true, 2, false);
+    m_display.setRotation(1);
 }

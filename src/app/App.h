@@ -6,6 +6,8 @@
 #include "../services/LedService.h"
 #include "../services/LibraryService.h"
 #include "../drivers/DisplayDriver.h"
+#include "../services/EpubParserService.h"
+#include "../services/EpubReaderService.h"
 
 class App {
 public:
@@ -22,8 +24,11 @@ private:
     WifiService m_wifiService;
     DisplayDriver m_display;
     LibraryService *m_libraryService = nullptr;
+    EpubParserService *m_epubParserService = nullptr;
+    EpubReaderService *m_epubReaderService = nullptr;
 
     void handleNextButtonEvent(const ButtonEvent &event);
     void handlePrevButtonEvent(const ButtonEvent &event);
     void handleBothButtonsHold();
+    void openActiveBook();
 };

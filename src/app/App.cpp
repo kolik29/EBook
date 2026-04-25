@@ -62,6 +62,8 @@ void App::begin() {
         Serial.println("Initializing library storage...");
 
         m_libraryService = new LibraryService(m_sdCard.fs());
+        m_epubParserService = new EpubParserService(m_sdCard.fs());
+        m_epubReaderService = new EpubReaderService(*m_epubParserService, m_display);
 
         if (m_libraryService->begin()) {
             Serial.println("Library storage initialized successfully");
@@ -75,6 +77,7 @@ void App::begin() {
             }
 
             m_wifiService.setLibraryService(m_libraryService);
+            openActiveBook();
         } else {
             Serial.println("Failed to initialize library storage");
         }
@@ -99,6 +102,11 @@ void App::handleNextButtonEvent(const ButtonEvent &event) {
     switch (event.type) {
         case ButtonEventType::Click:
             Serial.println("NEXT click");
+
+            if (m_epubReaderService) {
+                m_epubReaderService->nextPage();
+            }
+
             break;
 
         case ButtonEventType::LongPress:
@@ -117,6 +125,11 @@ void App::handlePrevButtonEvent(const ButtonEvent &event) {
     switch (event.type) {
         case ButtonEventType::Click:
             Serial.println("PREV click");
+
+            if (m_epubReaderService) {
+                m_epubReaderService->prevPage();
+            }
+
             break;
 
         case ButtonEventType::LongPress:
@@ -152,4 +165,35 @@ void App::handleBothButtonsHold() {
     if (!bothPressed) {
         bothHoldTriggered = false;
     }
+}
+
+void App::openActiveBook() {
+    if (!m_libraryService || !m_epubReaderService) {
+        return;
+    }
+
+    LibraryData library;
+
+    if (!m_libraryService->loadLibrary(library)) {
+        Serial.println("APP: failed to load library");
+        m_display.showMessage("Library error", "Failed to load library.json.");
+        return;
+    }
+
+    if (library.books.empty()) {
+        Serial.println("APP: library is empty");
+        m_display.showMessage("Library is empty", "Upload an EPUB book using web interface.");
+        return;
+    }
+
+    const BookItem &book = library.books[0];
+
+    String epubPath = "/books/items/";
+    epubPath += book.folder;
+    epubPath += "/original.epub";
+
+    Serial.print("APP: opening book: ");
+    Serial.println(epubPath);
+
+    m_epubReaderService->openBook(epubPath);
 }

@@ -17,6 +17,9 @@ public:
         String &outCoverPath
     );
 
+    bool parseBookStructure(const String &epubPath, EpubBookStructure &structure);
+    bool readSpineItemText(const String &epubPath, const EpubSpineItem &item, String &text);
+
 private:
     fs::FS &m_fs;
 
