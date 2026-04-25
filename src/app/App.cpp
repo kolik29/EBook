@@ -49,7 +49,6 @@ void App::begin() {
     Serial.println("Initializing display...");
 
     m_display.begin();
-    m_display.showMessage("KoliK e-book", "Display driver initialized successfully.");
 
     Serial.println("Initializing SD card...");
     if (m_sdCard.begin()) {
@@ -63,7 +62,11 @@ void App::begin() {
 
         m_libraryService = new LibraryService(m_sdCard.fs());
         m_epubParserService = new EpubParserService(m_sdCard.fs());
-        m_epubReaderService = new EpubReaderService(*m_epubParserService, m_display);
+        m_epubReaderService = new EpubReaderService(
+            m_sdCard.fs(),
+            *m_epubParserService,
+            m_display
+        );
 
         if (m_libraryService->begin()) {
             Serial.println("Library storage initialized successfully");
