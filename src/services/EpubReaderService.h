@@ -5,9 +5,11 @@
 #include <vector>
 
 #include "EpubParserService.h"
-#include "TextPaginatorService.h"
+#include "HtmlPaginatorService.h"
 #include "../drivers/DisplayDriver.h"
 #include "../models/EpubModels.h"
+#include "../models/HtmlRenderModels.h"
+#include "../config/Constants.h"
 
 class EpubReaderService {
 public:
@@ -22,10 +24,14 @@ public:
     void nextPage();
     void prevPage();
 
-private:
-    static constexpr int PAGE_MAX_CHARS_PER_LINE = 40;
-    static constexpr int PAGE_MAX_LINES_PER_PAGE = 30;
+    // Navigate to a global page within the currently open book.
+    // Returns false if the book is not open or the page index is out of range.
+    bool goToGlobalPage(int globalPage);
 
+    // Returns the epub path of the currently open book (empty if none).
+    const String &getCurrentEpubPath() const { return m_epubPath; }
+
+private:
     struct ReadingState {
         int spineIndex = 0;
         int pageIndex = 0;
@@ -37,11 +43,12 @@ private:
     fs::FS &m_fs;
     EpubParserService &m_parser;
     DisplayDriver &m_display;
-    TextPaginatorService m_paginator;
+    HtmlPaginatorService m_paginator;
 
     String m_epubPath;
     String m_pageIndexPath;
     String m_readerStatePath;
+    String m_lastError;
 
     EpubBookStructure m_structure;
 
@@ -50,7 +57,7 @@ private:
 
     bool m_opened = false;
 
-    std::vector<String> m_currentPages;
+    std::vector<HtmlRenderPage> m_currentPages;
     std::vector<int> m_spinePageCounts;
     int m_totalPageCount = 0;
 
@@ -68,4 +75,15 @@ private:
     void renderCurrentPage();
 
     int getGlobalPageNumber() const;
+    int getCurrentSpinePageCount() const;
+    String parserErrorOrFallback(const String &fallback) const;
+    String describeCurrentSpineItem() const;
+    void failWithMessage(const String &title, const String &message);
+    void setLastError(const String &message);
+    void clearLastError();
+
+    void startBookLaunchLog(const String &epubPath);
+    void rotateBookLaunchLogs();
+    void logBookLaunchAction(const String &message);
+    void logBookLaunchResult(bool ok, const String &message);
 };

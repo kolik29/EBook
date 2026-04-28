@@ -23,6 +23,7 @@ public:
     bool deleteBook(uint32_t bookId);
     bool removeBookFolder(const String &folder);
     bool setActiveBookAndCurrentPage(uint32_t bookId, uint32_t currentPage, BookItem &outBook);
+    bool updateBookTotalPages(const String &folder, uint32_t totalPages);
 
     String getItemsPath() const;
     String getCoverPath() const;

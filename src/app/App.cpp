@@ -71,15 +71,32 @@ void App::begin() {
         if (m_libraryService->begin()) {
             Serial.println("Library storage initialized successfully");
 
-            LibraryData library;
-            if (m_libraryService->loadLibrary(library)) {
-                Serial.print("Library loaded, books count: ");
-                Serial.println(library.books.size());
-            } else {
-                Serial.println("Failed to load library.json");
-            }
-
             m_wifiService.setLibraryService(m_libraryService);
+
+            // When the web UI sends PATCH /books/:id, open the requested book
+            // at the correct page on the e-ink display.
+            m_wifiService.setOnOpenBookPage([this](const String &folder, uint32_t globalPage) {
+                if (!m_epubReaderService) {
+                    return;
+                }
+
+                const String epubPath =
+                    String("/books/items/") + folder + "/original.epub";
+
+                if (m_epubReaderService->getCurrentEpubPath() == epubPath) {
+                    // Same book is already open — just jump to the page.
+                    Serial.print("APP: web navigate -> page ");
+                    Serial.println(globalPage);
+                    m_epubReaderService->goToGlobalPage(static_cast<int>(globalPage));
+                } else {
+                    // Different book — open it; saved state already has the
+                    // right page because setActiveBookAndCurrentPage ran first.
+                    Serial.print("APP: web open book -> ");
+                    Serial.println(epubPath);
+                    m_epubReaderService->openBook(epubPath);
+                }
+            });
+
             openActiveBook();
         } else {
             Serial.println("Failed to initialize library storage");
@@ -189,10 +206,25 @@ void App::openActiveBook() {
         return;
     }
 
-    const BookItem &book = library.books[0];
+    // Find the active book by folder; fall back to the first book if not found.
+    const BookItem *activeBook = nullptr;
+
+    if (!library.activeBookFolder.isEmpty()) {
+        for (const BookItem &item : library.books) {
+            if (item.folder == library.activeBookFolder) {
+                activeBook = &item;
+                break;
+            }
+        }
+    }
+
+    if (!activeBook) {
+        activeBook = &library.books[0];
+        Serial.println("APP: active book folder not found, falling back to first book");
+    }
 
     String epubPath = "/books/items/";
-    epubPath += book.folder;
+    epubPath += activeBook->folder;
     epubPath += "/original.epub";
 
     Serial.print("APP: opening book: ");

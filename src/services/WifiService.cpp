@@ -222,3 +222,7 @@ void WifiService::handleAutoDisable() {
 void WifiService::setLibraryService(LibraryService *libraryService) {
     m_webServer.setLibraryService(libraryService);
 }
+
+void WifiService::setOnOpenBookPage(std::function<void(const String &, uint32_t)> cb) {
+    m_webServer.setOnOpenBookPage(cb);
+}

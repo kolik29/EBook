@@ -18,10 +18,20 @@ public:
     );
 
     bool parseBookStructure(const String &epubPath, EpubBookStructure &structure);
+    bool readSpineItemHtml(const String &epubPath, const EpubSpineItem &item, String &html);
     bool readSpineItemText(const String &epubPath, const EpubSpineItem &item, String &text);
+    bool extractResourceData(
+        const String &epubPath,
+        const String &resourcePath,
+        size_t maxSize,
+        uint8_t *&outData,
+        size_t &outSize
+    );
+    const String &getLastError() const { return m_lastError; }
 
 private:
     fs::FS &m_fs;
+    String m_lastError;
 
     struct ZipEntryInfo {
         String name;
@@ -65,4 +75,10 @@ private:
     String normalizePath(const String &path) const;
     String getLowerFileExtension(const String &path) const;
     bool isImageMediaType(const String &mediaType) const;
+
+    void clearLastError();
+    void setLastError(const String &message);
+    void setLastError(const String &message, const String &detail);
+    void setLastErrorIfEmpty(const String &message);
+    void setLastErrorIfEmpty(const String &message, const String &detail);
 };

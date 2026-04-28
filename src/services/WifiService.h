@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <functional>
 #include "WebServerService.h"
 #include "LedService.h"
 #include "LibraryService.h"
@@ -26,6 +27,7 @@ public:
     int getAttemptCount() const;
 
     void setLibraryService(LibraryService *libraryService);
+    void setOnOpenBookPage(std::function<void(const String &, uint32_t)> cb);
 
 private:
     enum class State {

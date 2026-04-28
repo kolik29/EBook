@@ -1,11 +1,16 @@
 #include "WebServerService.h"
 #include "EpubParserService.h"
+#include "HtmlPaginatorService.h"
 
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <SD.h>
+#include <new>
+
+#include "../config/Constants.h"
+#include "../models/EpubModels.h"
 
 static WebServer server(80);
 
@@ -189,19 +194,13 @@ static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, body);
 
-    if (!error) {
-        if (doc["currentPage"].is<uint32_t>()) {
-            currentPage = doc["currentPage"].as<uint32_t>();
+    if (!error && doc["currentPage"].is<int>()) {
+        const int value = doc["currentPage"].as<int>();
+        if (value >= 1) {
+            currentPage = static_cast<uint32_t>(value);
             return true;
         }
-
-        if (doc["currentPage"].is<int>()) {
-            const int value = doc["currentPage"].as<int>();
-            if (value >= 1) {
-                currentPage = static_cast<uint32_t>(value);
-                return true;
-            }
-        }
+        return false;
     }
 
     if (isDigitsOnly(body)) {
@@ -543,6 +542,89 @@ bool WebServerService::begin(
                 return;
             }
 
+            // Build and cache page index at upload time so the device
+            // never has to do it on first open.
+            {
+                EpubBookStructure structure;
+                if (epubParser.parseBookStructure(epubPath, structure) && !structure.spine.empty()) {
+                    HtmlPaginatorService paginator(
+                        Constants::HTML_PAGE_CONTENT_WIDTH_PX,
+                        Constants::HTML_PAGE_CONTENT_HEIGHT_PX
+                    );
+
+                    std::vector<int> spineCounts;
+                    spineCounts.reserve(structure.spine.size());
+                    uint32_t totalPages = 0;
+                    bool pageIndexComplete = true;
+
+                    for (const EpubSpineItem &spineItem : structure.spine) {
+                        String spineHtml;
+                        if (epubParser.readSpineItemHtml(epubPath, spineItem, spineHtml)) {
+                            int cnt = 0;
+
+                            try {
+                                cnt = paginator.countPages(spineHtml, spineItem.path);
+                            } catch (const std::bad_alloc &) {
+                                Serial.print("WEB: page index skipped section, not enough memory: ");
+                                Serial.println(spineItem.path);
+                                pageIndexComplete = false;
+                                cnt = 0;
+                            } catch (...) {
+                                Serial.print("WEB: page index skipped section, paginator error: ");
+                                Serial.println(spineItem.path);
+                                pageIndexComplete = false;
+                                cnt = 0;
+                            }
+
+                            spineCounts.push_back(cnt);
+                            totalPages += static_cast<uint32_t>(cnt);
+                        } else {
+                            pageIndexComplete = false;
+                            spineCounts.push_back(0);
+                        }
+
+                        spineHtml = "";
+                    }
+
+                    if (totalPages > 0 && pageIndexComplete) {
+                        const String pageIndexPath =
+                            buildUploadBookDir(m_libraryService) + "/page_index.txt";
+
+                        File idxFile = SD.open(pageIndexPath, "w");
+                        if (idxFile) {
+                            idxFile.print("version=");
+                            idxFile.println(Constants::PAGE_INDEX_VERSION);
+                            idxFile.print("charsPerLine=");
+                            idxFile.println(Constants::HTML_PAGE_CONTENT_WIDTH_PX);
+                            idxFile.print("linesPerPage=");
+                            idxFile.println(Constants::HTML_PAGE_CONTENT_HEIGHT_PX);
+                            idxFile.print("spineCount=");
+                            idxFile.println(static_cast<int>(structure.spine.size()));
+                            idxFile.print("totalPages=");
+                            idxFile.println(totalPages);
+                            idxFile.print("counts=");
+                            for (int i = 0; i < static_cast<int>(spineCounts.size()); i++) {
+                                if (i > 0) idxFile.print(",");
+                                idxFile.print(spineCounts[i]);
+                            }
+                            idxFile.println();
+                            idxFile.close();
+                            Serial.print("WEB: page index saved, total=");
+                            Serial.println(totalPages);
+                        } else {
+                            Serial.println("WEB: failed to write page index");
+                        }
+
+                        m_libraryService->updateBookTotalPages(createdBook.folder, totalPages);
+                        createdBook.page.total = totalPages;
+                    } else if (!pageIndexComplete) {
+                        Serial.println("WEB: page index not saved because one or more sections failed");
+                    }
+                } else {
+                    Serial.println("WEB: could not parse book structure for page index");
+                }
+            }
+
             String response = "{";
             response += "\"ok\":true,";
             response += "\"message\":\"upload accepted\",";
@@ -720,6 +802,13 @@ bool WebServerService::begin(
                 response += "}";
 
                 server.send(200, "application/json; charset=utf-8", response);
+
+                // Notify the device to navigate to the new page.
+                // Done AFTER send() so HTTP response is already queued.
+                if (m_onOpenBookPage) {
+                    m_onOpenBookPage(updatedBook.folder, updatedBook.page.current);
+                }
+
                 return;
             }
         }
@@ -753,6 +842,10 @@ bool WebServerService::begin(
 
         if (LittleFS.exists("/index.html")) {
             File file = LittleFS.open("/index.html", "r");
+            if (!file || file.isDirectory()) {
+                server.send(500, "text/plain", "Failed to open index.html");
+                return;
+            }
             server.streamFile(file, "text/html; charset=utf-8");
             file.close();
 

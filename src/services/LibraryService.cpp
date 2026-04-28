@@ -173,7 +173,7 @@ bool LibraryService::saveLibrary(const LibraryData &library) {
     }
 
     String output;
-    serializeJsonPretty(doc, output);
+    serializeJson(doc, output);
 
     return writeFile(getLibraryPath(), output);
 }
@@ -331,6 +331,35 @@ bool LibraryService::setActiveBookAndCurrentPage(uint32_t bookId, uint32_t curre
     Serial.println(outBook.page.current);
 
     return true;
+}
+
+bool LibraryService::updateBookTotalPages(const String &folder, uint32_t totalPages) {
+    LibraryData library;
+    if (!loadLibrary(library)) {
+        Serial.println("LIB: updateBookTotalPages failed, cannot load library");
+        return false;
+    }
+
+    for (BookItem &item : library.books) {
+        if (item.folder == folder) {
+            item.page.total = totalPages;
+
+            if (!saveLibrary(library)) {
+                Serial.println("LIB: updateBookTotalPages failed, cannot save library");
+                return false;
+            }
+
+            Serial.print("LIB: updated total pages for folder=");
+            Serial.print(folder);
+            Serial.print(" total=");
+            Serial.println(totalPages);
+            return true;
+        }
+    }
+
+    Serial.print("LIB: updateBookTotalPages failed, folder not found: ");
+    Serial.println(folder);
+    return false;
 }
 
 bool LibraryService::removeBookFolder(const String &folder) {
