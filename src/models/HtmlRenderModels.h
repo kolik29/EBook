@@ -48,6 +48,7 @@ struct HtmlRenderElement {
     std::vector<HtmlTextRun> runs;
     String imagePath;
     String altText;
+    bool justify = false;
     int widthPx = 0;
     int heightPx = 0;
     int contentWidthPx = 0;
@@ -57,4 +58,9 @@ struct HtmlRenderPage {
     std::vector<HtmlRenderElement> elements;
 };
 
-using HtmlImageLoader = std::function<bool(const String &path, uint8_t *&outData, size_t &outSize)>;
+using HtmlImageLoader = std::function<bool(
+    const String &path,
+    uint8_t *&outData,
+    size_t &outSize,
+    String &outFilePath
+)>;

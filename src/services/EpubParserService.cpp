@@ -166,31 +166,7 @@ bool EpubParserService::extractZipEntryData(
         return false;
     }
 
-    if (!seekExact(file, entry.localHeaderOffset)) {
-        Serial.println("EPUB: failed to seek local header");
-        setLastError("Cannot seek to ZIP local header", entry.name);
-        return false;
-    }
-
-    uint8_t localHeader[30];
-    if (!readExact(file, localHeader, sizeof(localHeader))) {
-        Serial.println("EPUB: failed to read local header");
-        setLastError("Cannot read ZIP local header", entry.name);
-        return false;
-    }
-
-    if (readLe32(localHeader) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
-        Serial.println("EPUB: invalid local file header signature");
-        setLastError("Invalid ZIP local header signature", entry.name);
-        return false;
-    }
-
-    const uint16_t fileNameLength = readLe16(localHeader + 26);
-    const uint16_t extraLength = readLe16(localHeader + 28);
-
-    if (!skipBytes(file, fileNameLength + extraLength)) {
-        Serial.println("EPUB: failed to skip local header fields");
-        setLastError("Cannot skip ZIP local header fields", entry.name);
+    if (!seekToZipEntryPayload(file, entry)) {
         return false;
     }
 
@@ -284,6 +260,140 @@ bool EpubParserService::extractZipEntryData(
 
 EpubParserService::EpubParserService(fs::FS &fs)
     : m_fs(fs) {
+}
+
+bool EpubParserService::seekToZipEntryPayload(File &file, const ZipEntryInfo &entry) {
+    if (!seekExact(file, entry.localHeaderOffset)) {
+        Serial.println("EPUB: failed to seek local header");
+        setLastError("Cannot seek to ZIP local header", entry.name);
+        return false;
+    }
+
+    uint8_t localHeader[30];
+    if (!readExact(file, localHeader, sizeof(localHeader))) {
+        Serial.println("EPUB: failed to read local header");
+        setLastError("Cannot read ZIP local header", entry.name);
+        return false;
+    }
+
+    if (readLe32(localHeader) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        Serial.println("EPUB: invalid local file header signature");
+        setLastError("Invalid ZIP local header signature", entry.name);
+        return false;
+    }
+
+    const uint16_t fileNameLength = readLe16(localHeader + 26);
+    const uint16_t extraLength = readLe16(localHeader + 28);
+
+    if (!skipBytes(file, fileNameLength + extraLength)) {
+        Serial.println("EPUB: failed to skip local header fields");
+        setLastError("Cannot skip ZIP local header fields", entry.name);
+        return false;
+    }
+
+    return true;
+}
+
+bool EpubParserService::extractZipEntryToFile(
+    File &file,
+    const ZipEntryInfo &entry,
+    size_t maxSize,
+    const String &outputPath
+) {
+    if (entry.isDirectory) {
+        setLastError("ZIP entry is a directory", entry.name);
+        return false;
+    }
+
+    if (entry.uncompressedSize == 0 || entry.uncompressedSize > maxSize) {
+        String detail = entry.name;
+        detail += " size=";
+        detail += String(static_cast<unsigned long>(entry.uncompressedSize));
+        detail += " max=";
+        detail += String(static_cast<unsigned long>(maxSize));
+        setLastError("ZIP entry is empty or too large", detail);
+        return false;
+    }
+
+    if (m_fs.exists(outputPath)) {
+        m_fs.remove(outputPath);
+    }
+
+    File outFile = m_fs.open(outputPath, "w");
+    if (!outFile) {
+        Serial.print("EPUB: failed to open output file: ");
+        Serial.println(outputPath);
+        setLastError("Cannot open output file", outputPath);
+        return false;
+    }
+
+    if (entry.method == 0) {
+        if (!seekToZipEntryPayload(file, entry)) {
+            outFile.close();
+            m_fs.remove(outputPath);
+            return false;
+        }
+
+        uint8_t buffer[1024];
+        uint32_t remaining = entry.uncompressedSize;
+
+        while (remaining > 0) {
+            const size_t chunkSize = remaining > sizeof(buffer)
+                ? sizeof(buffer)
+                : remaining;
+            const size_t bytesRead = file.read(buffer, chunkSize);
+
+            if (bytesRead == 0) {
+                outFile.close();
+                m_fs.remove(outputPath);
+                setLastError("Cannot read stored ZIP entry data", entry.name);
+                return false;
+            }
+
+            const size_t written = outFile.write(buffer, bytesRead);
+            if (written != bytesRead) {
+                outFile.close();
+                m_fs.remove(outputPath);
+                setLastError("Cannot write output file", outputPath);
+                return false;
+            }
+
+            remaining -= static_cast<uint32_t>(bytesRead);
+        }
+
+        outFile.close();
+        return true;
+    }
+
+    outFile.close();
+
+    uint8_t *data = nullptr;
+    size_t size = 0;
+
+    if (!extractZipEntryData(file, entry, maxSize, data, size)) {
+        m_fs.remove(outputPath);
+        return false;
+    }
+
+    outFile = m_fs.open(outputPath, "w");
+    if (!outFile) {
+        free(data);
+        m_fs.remove(outputPath);
+        setLastError("Cannot open output file", outputPath);
+        return false;
+    }
+
+    const size_t written = outFile.write(data, size);
+    outFile.close();
+    free(data);
+
+    if (written != size) {
+        m_fs.remove(outputPath);
+        setLastError("Cannot write output file", outputPath);
+        return false;
+    }
+
+    return true;
 }
 
 void EpubParserService::clearLastError() {
@@ -1351,6 +1461,57 @@ bool EpubParserService::extractResourceData(
     return ok;
 }
 
+bool EpubParserService::extractResourceToFile(
+    const String &epubPath,
+    const String &resourcePath,
+    size_t maxSize,
+    const String &outputPath
+) {
+    clearLastError();
+
+    if (resourcePath.isEmpty() || resourcePath.startsWith("data:")) {
+        setLastError("Resource path is empty or inline data is unsupported");
+        return false;
+    }
+
+    if (outputPath.isEmpty()) {
+        setLastError("Output path is empty");
+        return false;
+    }
+
+    File epubFile = m_fs.open(epubPath, "r");
+    if (!epubFile || epubFile.isDirectory()) {
+        Serial.print("EPUB: failed to open file for resource: ");
+        Serial.println(epubPath);
+        setLastError("Cannot open EPUB file for resource", epubPath);
+        return false;
+    }
+
+    ZipEntryInfo entry;
+    if (!findZipEntry(epubFile, resourcePath.c_str(), entry)) {
+        Serial.print("EPUB: resource entry not found: ");
+        Serial.println(resourcePath);
+        setLastErrorIfEmpty("EPUB resource was not found in archive", resourcePath);
+        epubFile.close();
+        return false;
+    }
+
+    const bool ok = extractZipEntryToFile(epubFile, entry, maxSize, outputPath);
+    epubFile.close();
+
+    if (!ok) {
+        setLastErrorIfEmpty("Cannot extract EPUB resource to file");
+        return false;
+    }
+
+    Serial.print("EPUB: resource extracted to file: ");
+    Serial.print(resourcePath);
+    Serial.print(" -> ");
+    Serial.println(outputPath);
+
+    return true;
+}
+
 bool EpubParserService::extractCoverToFile(
     const String &epubPath,
     const EpubMetadata &metadata,
@@ -1381,18 +1542,6 @@ bool EpubParserService::extractCoverToFile(
         return false;
     }
 
-    uint8_t *coverData = nullptr;
-    size_t coverSize = 0;
-
-    if (!extractZipEntryData(epubFile, coverEntry, 5 * 1024 * 1024, coverData, coverSize)) {
-        Serial.println("EPUB: failed to extract cover data");
-        setLastErrorIfEmpty("Cannot extract EPUB cover image");
-        epubFile.close();
-        return false;
-    }
-
-    epubFile.close();
-
     String ext = getLowerFileExtension(metadata.coverInternalPath);
     if (ext.isEmpty()) {
         ext = ".jpg";
@@ -1400,30 +1549,14 @@ bool EpubParserService::extractCoverToFile(
 
     const String outputPath = outputBasePath + ext;
 
-    if (m_fs.exists(outputPath)) {
-        m_fs.remove(outputPath);
-    }
-
-    File outFile = m_fs.open(outputPath, "w");
-    if (!outFile) {
-        Serial.print("EPUB: failed to open cover output file: ");
-        Serial.println(outputPath);
-        setLastError("Cannot open cover output file", outputPath);
-        free(coverData);
+    if (!extractZipEntryToFile(epubFile, coverEntry, 5 * 1024 * 1024, outputPath)) {
+        Serial.println("EPUB: failed to extract cover data");
+        setLastErrorIfEmpty("Cannot extract EPUB cover image");
+        epubFile.close();
         return false;
     }
 
-    const size_t written = outFile.write(coverData, coverSize);
-    outFile.close();
-    free(coverData);
-
-    if (written != coverSize) {
-        Serial.print("EPUB: failed to fully write cover file: ");
-        Serial.println(outputPath);
-        setLastError("Cannot fully write cover output file", outputPath);
-        return false;
-    }
-
+    epubFile.close();
     outCoverPath = outputPath;
 
     Serial.print("EPUB: cover saved to ");

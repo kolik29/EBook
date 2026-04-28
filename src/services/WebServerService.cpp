@@ -211,6 +211,48 @@ static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage
     return false;
 }
 
+static bool ensureBookCover(LibraryService *libraryService, BookItem &item) {
+    if (!libraryService) {
+        return false;
+    }
+
+    if (!item.cover.isEmpty() && SD.exists(item.cover)) {
+        return false;
+    }
+
+    const String epubPath =
+        libraryService->getItemsPath() + "/" + item.folder + "/original.epub";
+
+    if (!SD.exists(epubPath)) {
+        return false;
+    }
+
+    EpubParserService epubParser(SD);
+    EpubMetadata metadata;
+
+    if (!epubParser.readMetadata(epubPath, metadata) || !metadata.hasCover) {
+        return false;
+    }
+
+    String coverPath = "";
+    const String coverBasePath = libraryService->getCoverPath() + "/" + item.folder;
+
+    if (!epubParser.extractCoverToFile(epubPath, metadata, coverBasePath, coverPath)) {
+        Serial.print("WEB: failed to repair cover for ");
+        Serial.println(item.folder);
+        return false;
+    }
+
+    item.cover = coverPath;
+
+    Serial.print("WEB: repaired cover for ");
+    Serial.print(item.folder);
+    Serial.print(": ");
+    Serial.println(item.cover);
+
+    return true;
+}
+
 static void sendBooksFromLibrary(LibraryService *libraryService) {
     if (!libraryService) {
         server.send(500, "application/json; charset=utf-8",
@@ -223,6 +265,16 @@ static void sendBooksFromLibrary(LibraryService *libraryService) {
         server.send(500, "application/json; charset=utf-8",
             R"({"ok":false,"message":"failed to load library"})");
         return;
+    }
+
+    bool libraryChanged = false;
+
+    for (BookItem &item : library.books) {
+        libraryChanged = ensureBookCover(libraryService, item) || libraryChanged;
+    }
+
+    if (libraryChanged && !libraryService->saveLibrary(library)) {
+        Serial.println("WEB: failed to save repaired cover paths");
     }
 
     JsonDocument doc;

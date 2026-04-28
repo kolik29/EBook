@@ -4,8 +4,11 @@
 #include <utility>
 
 #include "../config/Constants.h"
+#include "BookFontMetrics.h"
 
 namespace {
+    constexpr int PARAGRAPH_FIRST_LINE_INDENT_PX = 30;
+
     bool isSpaceChar(char c) {
         return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f';
     }
@@ -149,6 +152,7 @@ void HtmlPaginatorService::paginateInternal(
     CurrentLine line;
     HtmlTextStyle currentStyle;
     int cursorY = 0;
+    int pendingFirstLineIndentPx = 0;
     int pos = 0;
 
     styleStack.push_back(currentStyle);
@@ -163,7 +167,8 @@ void HtmlPaginatorService::paginateInternal(
                 collector,
                 currentPage,
                 line,
-                cursorY
+                cursorY,
+                pendingFirstLineIndentPx
             );
             break;
         }
@@ -175,7 +180,8 @@ void HtmlPaginatorService::paginateInternal(
                 collector,
                 currentPage,
                 line,
-                cursorY
+                cursorY,
+                pendingFirstLineIndentPx
             );
         }
 
@@ -204,8 +210,13 @@ void HtmlPaginatorService::paginateInternal(
         }
 
         if (tag.closing) {
-            if (isParagraphTag(tagName) || isHeadingTag(tagName) || tagName == "li") {
-                addSpacer(isHeadingTag(tagName) ? 10 : 7, collector, currentPage, line, cursorY);
+            if (isHeadingTag(tagName)) {
+                addSpacer(8, collector, currentPage, line, cursorY);
+            } else if (isParagraphTag(tagName)) {
+                addSpacer(0, collector, currentPage, line, cursorY);
+                pendingFirstLineIndentPx = 0;
+            } else if (tagName == "li") {
+                addSpacer(3, collector, currentPage, line, cursorY);
             } else if (isBlockTag(tagName)) {
                 flushLine(collector, currentPage, line, cursorY);
             }
@@ -243,10 +254,15 @@ void HtmlPaginatorService::paginateInternal(
         applyCssRules(tagName, tag.raw, cssRules, nextStyle);
         applyDeclarations(getAttributeValue(tag.raw, "style"), nextStyle);
 
-        if (isParagraphTag(tagName) || isHeadingTag(tagName) || tagName == "li") {
-            addSpacer(isHeadingTag(tagName) ? 10 : 6, collector, currentPage, line, cursorY);
-        } else if (tagName == "blockquote") {
+        if (isHeadingTag(tagName)) {
             addSpacer(8, collector, currentPage, line, cursorY);
+        } else if (isParagraphTag(tagName)) {
+            addSpacer(0, collector, currentPage, line, cursorY);
+            pendingFirstLineIndentPx = PARAGRAPH_FIRST_LINE_INDENT_PX;
+        } else if (tagName == "li") {
+            addSpacer(2, collector, currentPage, line, cursorY);
+        } else if (tagName == "blockquote") {
+            addSpacer(5, collector, currentPage, line, cursorY);
         } else if (isBlockTag(tagName)) {
             flushLine(collector, currentPage, line, cursorY);
         }
@@ -641,7 +657,8 @@ void HtmlPaginatorService::appendText(
     PageCollector &collector,
     HtmlRenderPage &currentPage,
     CurrentLine &line,
-    int &cursorY
+    int &cursorY,
+    int &pendingFirstLineIndentPx
 ) const {
     if (style.hidden || text.isEmpty()) {
         return;
@@ -655,7 +672,15 @@ void HtmlPaginatorService::appendText(
 
         if (isSpaceChar(c)) {
             if (!word.isEmpty()) {
-                appendWord(word, style, collector, currentPage, line, cursorY);
+                appendWord(
+                    word,
+                    style,
+                    collector,
+                    currentPage,
+                    line,
+                    cursorY,
+                    pendingFirstLineIndentPx
+                );
                 word = "";
             }
             continue;
@@ -665,7 +690,15 @@ void HtmlPaginatorService::appendText(
     }
 
     if (!word.isEmpty()) {
-        appendWord(word, style, collector, currentPage, line, cursorY);
+        appendWord(
+            word,
+            style,
+            collector,
+            currentPage,
+            line,
+            cursorY,
+            pendingFirstLineIndentPx
+        );
     }
 }
 
@@ -675,26 +708,45 @@ void HtmlPaginatorService::appendWord(
     PageCollector &collector,
     HtmlRenderPage &currentPage,
     CurrentLine &line,
-    int &cursorY
+    int &cursorY,
+    int &pendingFirstLineIndentPx
 ) const {
     if (word.isEmpty()) {
         return;
     }
 
-    const int availableWidth = m_pageWidthPx - style.indentPx;
+    HtmlTextStyle lineStartStyle = style;
+
+    if (!line.active && pendingFirstLineIndentPx > 0
+        && lineStartStyle.align == HtmlTextAlign::Left) {
+        lineStartStyle.indentPx += pendingFirstLineIndentPx;
+    }
+
+    int availableWidth = m_pageWidthPx - (line.active ? line.style.indentPx : lineStartStyle.indentPx);
     const int spaceWidth = line.active ? measureText(" ", style) : 0;
     const int wordWidth = measureText(word, style);
 
     if (line.active && line.widthPx + spaceWidth + wordWidth > availableWidth) {
-        flushLine(collector, currentPage, line, cursorY);
+        flushLine(collector, currentPage, line, cursorY, true);
+        availableWidth = m_pageWidthPx - style.indentPx;
     }
 
     if (!line.active) {
+        HtmlTextStyle activeStyle = style;
+
+        if (pendingFirstLineIndentPx > 0) {
+            if (activeStyle.align == HtmlTextAlign::Left) {
+                activeStyle.indentPx += pendingFirstLineIndentPx;
+            }
+            pendingFirstLineIndentPx = 0;
+        }
+
         line.active = true;
-        line.style = style;
+        line.style = activeStyle;
         line.widthPx = 0;
         line.heightPx = lineHeight(style);
         line.runs.reserve(8);
+        availableWidth = m_pageWidthPx - line.style.indentPx;
     }
 
     if (line.widthPx > 0) {
@@ -710,7 +762,10 @@ void HtmlPaginatorService::appendWord(
         String remaining = word;
 
         while (!remaining.isEmpty()) {
-            int maxChars = availableWidth / charWidth(style);
+            const int currentAvailableWidth = line.active
+                ? m_pageWidthPx - line.style.indentPx
+                : availableWidth;
+            int maxChars = currentAvailableWidth / charWidth(style);
             if (maxChars < 1) {
                 maxChars = 1;
             }
@@ -754,7 +809,8 @@ void HtmlPaginatorService::flushLine(
     PageCollector &collector,
     HtmlRenderPage &currentPage,
     CurrentLine &line,
-    int &cursorY
+    int &cursorY,
+    bool justifyLine
 ) const {
     if (!line.active || line.runs.empty()) {
         line = CurrentLine();
@@ -767,6 +823,7 @@ void HtmlPaginatorService::flushLine(
     element.type = HtmlElementType::TextLine;
     element.style = line.style;
     element.runs = std::move(line.runs);
+    element.justify = justifyLine && element.style.align == HtmlTextAlign::Left;
     element.widthPx = line.widthPx;
     element.heightPx = line.heightPx;
     element.contentWidthPx = m_pageWidthPx;
@@ -834,6 +891,9 @@ void HtmlPaginatorService::addImage(
     String src = getAttributeValue(rawTag, "src");
     if (src.isEmpty()) {
         src = getAttributeValue(rawTag, "href");
+    }
+    if (src.isEmpty()) {
+        src = getAttributeValue(rawTag, "xlink:href");
     }
 
     if (src.isEmpty()) {
@@ -913,7 +973,7 @@ void HtmlPaginatorService::pushPageIfNotEmpty(
 }
 
 int HtmlPaginatorService::measureText(const String &text, const HtmlTextStyle &style) const {
-    return text.length() * charWidth(style);
+    return BookFontMetrics::textWidth(text, style);
 }
 
 int HtmlPaginatorService::lineHeight(const HtmlTextStyle &style) const {
@@ -935,33 +995,7 @@ int HtmlPaginatorService::lineHeight(const HtmlTextStyle &style) const {
 }
 
 int HtmlPaginatorService::charWidth(const HtmlTextStyle &style) const {
-    int width = 10;
-
-    switch (style.size) {
-        case HtmlTextSize::Heading1:
-            width = 20;
-            break;
-        case HtmlTextSize::Heading2:
-            width = 14;
-            break;
-        case HtmlTextSize::Heading3:
-        case HtmlTextSize::Large:
-            width = 12;
-            break;
-        case HtmlTextSize::Small:
-            width = 8;
-            break;
-        case HtmlTextSize::Normal:
-        default:
-            width = 10;
-            break;
-    }
-
-    if (style.bold) {
-        width += 1;
-    }
-
-    return width;
+    return BookFontMetrics::fallbackCharWidth(style);
 }
 
 int HtmlPaginatorService::parseCssPx(const String &inputValue, int fallbackPx, int parentPx) const {

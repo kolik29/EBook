@@ -27,6 +27,12 @@ public:
         uint8_t *&outData,
         size_t &outSize
     );
+    bool extractResourceToFile(
+        const String &epubPath,
+        const String &resourcePath,
+        size_t maxSize,
+        const String &outputPath
+    );
     const String &getLastError() const { return m_lastError; }
 
 private:
@@ -51,6 +57,12 @@ private:
         uint8_t *&outData,
         size_t &outSize
     );
+    bool extractZipEntryToFile(
+        File &file,
+        const ZipEntryInfo &entry,
+        size_t maxSize,
+        const String &outputPath
+    );
 
     bool extractZipEntryText(
         File &file,
@@ -58,6 +70,7 @@ private:
         size_t maxSize,
         String &outText
     );
+    bool seekToZipEntryPayload(File &file, const ZipEntryInfo &entry);
 
     bool findRootFilePath(const String &containerXml, String &outRootFilePath) const;
     bool parsePackageMetadata(

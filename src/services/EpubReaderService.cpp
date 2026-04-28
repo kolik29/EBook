@@ -12,6 +12,55 @@ namespace {
         "/logs/book_launch_1.log",
         "/logs/book_launch_2.log"
     };
+
+    uint32_t hashPath(const String &value) {
+        uint32_t hash = 2166136261UL;
+
+        for (int i = 0; i < value.length(); i++) {
+            hash ^= static_cast<uint8_t>(value[i]);
+            hash *= 16777619UL;
+        }
+
+        return hash;
+    }
+
+    String extensionFromPath(const String &path) {
+        int end = path.length();
+        const int queryPos = path.indexOf('?');
+        const int fragmentPos = path.indexOf('#');
+
+        if (queryPos >= 0 && queryPos < end) {
+            end = queryPos;
+        }
+
+        if (fragmentPos >= 0 && fragmentPos < end) {
+            end = fragmentPos;
+        }
+
+        const int slashPos = path.lastIndexOf('/');
+        const int dotPos = path.lastIndexOf('.');
+
+        if (dotPos <= slashPos || dotPos < 0 || dotPos >= end) {
+            return ".img";
+        }
+
+        String ext = path.substring(dotPos, end);
+        ext.toLowerCase();
+
+        return ext.length() <= 6 ? ext : ".img";
+    }
+
+    String imageCachePathForEpub(const String &epubPath, const String &resourcePath) {
+        const int slashPos = epubPath.lastIndexOf('/');
+        const String folder = slashPos >= 0
+            ? epubPath.substring(0, slashPos)
+            : "/";
+
+        return folder
+            + "/reader_image_"
+            + String(static_cast<unsigned long>(hashPath(resourcePath)), HEX)
+            + extensionFromPath(resourcePath);
+    }
 }
 
 EpubReaderService::EpubReaderService(
@@ -324,24 +373,44 @@ void EpubReaderService::renderCurrentPage() {
     renderMessage += String(m_currentPageIndex);
     logBookLaunchAction(renderMessage);
 
-    HtmlImageLoader imageLoader = [this](const String &path, uint8_t *&outData, size_t &outSize) {
-        const bool ok = m_parser.extractResourceData(
+    HtmlImageLoader imageLoader = [this](
+        const String &path,
+        uint8_t *&outData,
+        size_t &outSize,
+        String &outFilePath
+    ) {
+        outData = nullptr;
+        outSize = 0;
+        outFilePath = "";
+
+        if (m_parser.extractResourceData(
             m_epubPath,
             path,
             5 * 1024 * 1024,
             outData,
             outSize
-        );
-
-        if (!ok) {
-            String message = "WARN: image load failed: ";
-            message += path;
-            message += " - ";
-            message += parserErrorOrFallback("No parser details available.");
-            logBookLaunchAction(message);
+        )) {
+            return true;
         }
 
-        return ok;
+        const String cachePath = imageCachePathForEpub(m_epubPath, path);
+        if (m_parser.extractResourceToFile(
+            m_epubPath,
+            path,
+            5 * 1024 * 1024,
+            cachePath
+        )) {
+            outFilePath = cachePath;
+            return true;
+        }
+
+        String message = "WARN: image load failed: ";
+        message += path;
+        message += " - ";
+        message += parserErrorOrFallback("No parser details available.");
+        logBookLaunchAction(message);
+
+        return false;
     };
 
     m_display.showHtmlPage(

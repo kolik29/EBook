@@ -78,7 +78,8 @@ private:
         PageCollector &collector,
         HtmlRenderPage &currentPage,
         CurrentLine &line,
-        int &cursorY
+        int &cursorY,
+        int &pendingFirstLineIndentPx
     ) const;
     void appendWord(
         const String &word,
@@ -86,13 +87,15 @@ private:
         PageCollector &collector,
         HtmlRenderPage &currentPage,
         CurrentLine &line,
-        int &cursorY
+        int &cursorY,
+        int &pendingFirstLineIndentPx
     ) const;
     void flushLine(
         PageCollector &collector,
         HtmlRenderPage &currentPage,
         CurrentLine &line,
-        int &cursorY
+        int &cursorY,
+        bool justifyLine = false
     ) const;
     void addSpacer(
         int heightPx,

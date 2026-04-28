@@ -1,15 +1,19 @@
 #include "DisplayDriver.h"
 
 #include "../config/Constants.h"
+#include "../services/BookFontMetrics.h"
 
 #include <esp_heap_caps.h>
 #include <esp_rom_tjpgd.h>
+#include <FS.h>
+#include <SD.h>
 #include <stdlib.h>
 #include <string.h>
 
 namespace {
     struct JpegDrawContext {
         const uint8_t *data = nullptr;
+        File *file = nullptr;
         size_t size = 0;
         size_t offset = 0;
         EpdDisplay *display = nullptr;
@@ -216,7 +220,21 @@ namespace {
         const uint32_t available = static_cast<uint32_t>(ctx->size - ctx->offset);
         const uint32_t toRead = ndata < available ? ndata : available;
 
-        if (buffer) {
+        if (ctx->file) {
+            size_t bytesRead = 0;
+
+            if (buffer) {
+                bytesRead = ctx->file->read(buffer, toRead);
+            } else {
+                const uint32_t nextPos = static_cast<uint32_t>(ctx->file->position() + toRead);
+                bytesRead = ctx->file->seek(nextPos, SeekSet) ? toRead : 0;
+            }
+
+            ctx->offset += bytesRead;
+            return static_cast<uint32_t>(bytesRead);
+        }
+
+        if (ctx->data && buffer) {
             memcpy(buffer, ctx->data + ctx->offset, toRead);
         }
 
@@ -293,6 +311,131 @@ namespace {
         }
 
         return 1;
+    }
+
+    bool drawJpegContext(
+        JpegDrawContext &ctx,
+        int x,
+        int y,
+        int maxWidth,
+        int maxHeight
+    ) {
+        if (!ctx.display || ctx.size == 0 || maxWidth <= 0 || maxHeight <= 0) {
+            return false;
+        }
+
+        esp_rom_tjpgd_dec_t decoder;
+        ctx.offset = 0;
+
+        if (ctx.file) {
+            ctx.file->seek(0, SeekSet);
+        }
+
+        void *work = malloc(4096);
+        if (!work) {
+            Serial.println("DISPLAY: jpeg work allocation failed");
+            return false;
+        }
+
+        esp_rom_tjpgd_result_t result = esp_rom_tjpgd_prepare(
+            &decoder,
+            jpegInput,
+            work,
+            4096,
+            &ctx
+        );
+
+        if (result != JDR_OK) {
+            Serial.print("DISPLAY: jpeg prepare failed: ");
+            Serial.println(static_cast<int>(result));
+            free(work);
+            return false;
+        }
+
+        const float fitScale = min(
+            static_cast<float>(maxWidth) / static_cast<float>(decoder.width),
+            static_cast<float>(maxHeight) / static_cast<float>(decoder.height)
+        );
+        const float targetScale = min(fitScale, Constants::DISPLAY_IMAGE_MAX_UPSCALE);
+
+        int targetW = static_cast<int>(decoder.width * targetScale);
+        int targetH = static_cast<int>(decoder.height * targetScale);
+
+        if (targetW < 1) targetW = 1;
+        if (targetH < 1) targetH = 1;
+        if (targetW > maxWidth) targetW = maxWidth;
+        if (targetH > maxHeight) targetH = maxHeight;
+
+        uint8_t scale = 0;
+        while (scale < 3) {
+            const int candidateW = static_cast<int>(decoder.width >> (scale + 1));
+            const int candidateH = static_cast<int>(decoder.height >> (scale + 1));
+
+            if (candidateW < targetW || candidateH < targetH) {
+                break;
+            }
+
+            scale++;
+        }
+
+        const int scaleDivisor = 1 << scale;
+        ctx.decodedWidth = static_cast<int>((decoder.width + scaleDivisor - 1) >> scale);
+        ctx.decodedHeight = static_cast<int>((decoder.height + scaleDivisor - 1) >> scale);
+        ctx.destWidth = targetW;
+        ctx.destHeight = targetH;
+        ctx.drawX = x + (maxWidth - targetW) / 2;
+        ctx.drawY = y + (maxHeight - targetH) / 2;
+
+        const size_t pixelCount = static_cast<size_t>(targetW) * targetH;
+        ctx.grayBuffer = allocateImageBuffer(pixelCount);
+
+        if (ctx.grayBuffer) {
+            memset(ctx.grayBuffer, 0xFF, pixelCount);
+            ctx.collectGrayscale = true;
+        } else {
+            free(ctx.grayBuffer);
+            ctx.grayBuffer = nullptr;
+            ctx.collectGrayscale = false;
+            Serial.println("DISPLAY: image grayscale buffer allocation failed, using direct ordered dither");
+        }
+
+        Serial.print("DISPLAY: jpeg ");
+        Serial.print(static_cast<int>(decoder.width));
+        Serial.print("x");
+        Serial.print(static_cast<int>(decoder.height));
+        Serial.print(" -> ");
+        Serial.print(targetW);
+        Serial.print("x");
+        Serial.print(targetH);
+        Serial.print(" scale=1/");
+        Serial.print(scaleDivisor);
+        Serial.print(" dither=");
+        Serial.println(ctx.collectGrayscale ? "floyd-steinberg" : "ordered-direct");
+
+        result = esp_rom_tjpgd_decomp(&decoder, jpegOutput, scale);
+        free(work);
+
+        if (result != JDR_OK) {
+            Serial.print("DISPLAY: jpeg decode failed: ");
+            Serial.println(static_cast<int>(result));
+            free(ctx.grayBuffer);
+            return false;
+        }
+
+        if (ctx.collectGrayscale) {
+            drawErrorDiffusedGrayscaleImage(
+                *ctx.display,
+                ctx.grayBuffer,
+                ctx.drawX,
+                ctx.drawY,
+                ctx.destWidth,
+                ctx.destHeight
+            );
+        }
+
+        free(ctx.grayBuffer);
+
+        return true;
     }
 }
 
@@ -689,11 +832,17 @@ void DisplayDriver::preloadHtmlImages(
 
         CachedHtmlImage cached;
         cached.path = element.imagePath;
-        cached.loaded = imageLoader(cached.path, cached.data, cached.size);
+        cached.loaded = imageLoader(
+            cached.path,
+            cached.data,
+            cached.size,
+            cached.localFilePath
+        );
 
         if (!cached.loaded) {
             cached.data = nullptr;
             cached.size = 0;
+            cached.localFilePath = "";
         }
 
         imageCache.push_back(cached);
@@ -896,10 +1045,33 @@ void DisplayDriver::renderHtmlTextLine(
 
     const int baselineY = y + baselineOffsetForStyle(element.style);
     int cursorX = lineX;
+    int justifyExtraPx = 0;
+    int justifySpaces = 0;
+
+    if (element.justify
+        && element.style.align == HtmlTextAlign::Left
+        && element.widthPx < availableWidth) {
+        for (const HtmlTextRun &run : element.runs) {
+            if (run.text == " ") {
+                justifySpaces++;
+            }
+        }
+
+        if (justifySpaces > 0) {
+            justifyExtraPx = availableWidth - element.widthPx;
+        }
+    }
 
     for (const HtmlTextRun &run : element.runs) {
         if (run.text.isEmpty()) {
             continue;
+        }
+
+        int extraAdvance = 0;
+        if (justifyExtraPx > 0 && justifySpaces > 0 && run.text == " ") {
+            extraAdvance = justifyExtraPx / justifySpaces;
+            justifyExtraPx -= extraAdvance;
+            justifySpaces--;
         }
 
         m_display.setFont(fontForStyle(run.style));
@@ -910,13 +1082,13 @@ void DisplayDriver::renderHtmlTextLine(
             m_display.drawLine(
                 cursorX,
                 baselineY + 3,
-                cursorX + run.widthPx,
+                cursorX + run.widthPx + extraAdvance,
                 baselineY + 3,
                 GxEPD_BLACK
             );
         }
 
-        cursorX += run.widthPx;
+        cursorX += run.widthPx + extraAdvance;
     }
 }
 
@@ -937,10 +1109,33 @@ void DisplayDriver::renderHtmlTextLineBw(
 
     const int baselineY = y + baselineOffsetForStyle(element.style);
     int cursorX = lineX;
+    int justifyExtraPx = 0;
+    int justifySpaces = 0;
+
+    if (element.justify
+        && element.style.align == HtmlTextAlign::Left
+        && element.widthPx < availableWidth) {
+        for (const HtmlTextRun &run : element.runs) {
+            if (run.text == " ") {
+                justifySpaces++;
+            }
+        }
+
+        if (justifySpaces > 0) {
+            justifyExtraPx = availableWidth - element.widthPx;
+        }
+    }
 
     for (const HtmlTextRun &run : element.runs) {
         if (run.text.isEmpty()) {
             continue;
+        }
+
+        int extraAdvance = 0;
+        if (justifyExtraPx > 0 && justifySpaces > 0 && run.text == " ") {
+            extraAdvance = justifyExtraPx / justifySpaces;
+            justifyExtraPx -= extraAdvance;
+            justifySpaces--;
         }
 
         m_displayBw.setFont(fontForStyle(run.style));
@@ -951,13 +1146,13 @@ void DisplayDriver::renderHtmlTextLineBw(
             m_displayBw.drawLine(
                 cursorX,
                 baselineY + 3,
-                cursorX + run.widthPx,
+                cursorX + run.widthPx + extraAdvance,
                 baselineY + 3,
                 GxEPD_BLACK
             );
         }
 
-        cursorX += run.widthPx;
+        cursorX += run.widthPx + extraAdvance;
     }
 }
 
@@ -987,17 +1182,25 @@ void DisplayDriver::renderHtmlImage(
 
     const CachedHtmlImage *cached = findCachedHtmlImage(imageCache, element.imagePath);
 
-    if (!cached || !cached->loaded || !cached->data || cached->size == 0) {
+    if (!cached || !cached->loaded) {
         renderImagePlaceholder(element, imageX, y, imageWidth, imageHeight, "image not found");
         return;
     }
 
     bool rendered = false;
 
-    if (cached->size >= 2 && cached->data[0] == 0xFF && cached->data[1] == 0xD8) {
+    if (cached->data && cached->size >= 2 && cached->data[0] == 0xFF && cached->data[1] == 0xD8) {
         rendered = drawJpegData(
             cached->data,
             cached->size,
+            imageX,
+            y,
+            imageWidth,
+            imageHeight
+        );
+    } else if (!cached->localFilePath.isEmpty()) {
+        rendered = drawJpegFile(
+            cached->localFilePath,
             imageX,
             y,
             imageWidth,
@@ -1044,141 +1247,45 @@ bool DisplayDriver::drawJpegData(
         return false;
     }
 
-    esp_rom_tjpgd_dec_t decoder;
     JpegDrawContext ctx;
     ctx.data = data;
     ctx.size = size;
-    ctx.offset = 0;
     ctx.display = &m_display;
 
-    void *work = malloc(4096);
-    if (!work) {
-        Serial.println("DISPLAY: jpeg work allocation failed");
+    return drawJpegContext(ctx, x, y, maxWidth, maxHeight);
+}
+
+bool DisplayDriver::drawJpegFile(
+    const String &path,
+    int x,
+    int y,
+    int maxWidth,
+    int maxHeight
+) {
+    if (path.isEmpty() || maxWidth <= 0 || maxHeight <= 0) {
         return false;
     }
 
-    esp_rom_tjpgd_result_t result = esp_rom_tjpgd_prepare(
-        &decoder,
-        jpegInput,
-        work,
-        4096,
-        &ctx
-    );
-
-    if (result != JDR_OK) {
-        Serial.print("DISPLAY: jpeg prepare failed: ");
-        Serial.println(static_cast<int>(result));
-        free(work);
+    File file = SD.open(path, "r");
+    if (!file || file.isDirectory()) {
+        Serial.print("DISPLAY: jpeg file open failed: ");
+        Serial.println(path);
         return false;
     }
 
-    const float fitScale = min(
-        static_cast<float>(maxWidth) / static_cast<float>(decoder.width),
-        static_cast<float>(maxHeight) / static_cast<float>(decoder.height)
-    );
-    const float targetScale = min(fitScale, Constants::DISPLAY_IMAGE_MAX_UPSCALE);
+    JpegDrawContext ctx;
+    ctx.file = &file;
+    ctx.size = file.size();
+    ctx.display = &m_display;
 
-    int targetW = static_cast<int>(decoder.width * targetScale);
-    int targetH = static_cast<int>(decoder.height * targetScale);
+    const bool ok = drawJpegContext(ctx, x, y, maxWidth, maxHeight);
+    file.close();
 
-    if (targetW < 1) targetW = 1;
-    if (targetH < 1) targetH = 1;
-    if (targetW > maxWidth) targetW = maxWidth;
-    if (targetH > maxHeight) targetH = maxHeight;
-
-    uint8_t scale = 0;
-    while (scale < 3) {
-        const int candidateW = static_cast<int>(decoder.width >> (scale + 1));
-        const int candidateH = static_cast<int>(decoder.height >> (scale + 1));
-
-        if (candidateW < targetW || candidateH < targetH) {
-            break;
-        }
-
-        scale++;
-    }
-
-    const int scaleDivisor = 1 << scale;
-    ctx.decodedWidth = static_cast<int>((decoder.width + scaleDivisor - 1) >> scale);
-    ctx.decodedHeight = static_cast<int>((decoder.height + scaleDivisor - 1) >> scale);
-    ctx.destWidth = targetW;
-    ctx.destHeight = targetH;
-    ctx.drawX = x + (maxWidth - targetW) / 2;
-    ctx.drawY = y + (maxHeight - targetH) / 2;
-
-    const size_t pixelCount = static_cast<size_t>(targetW) * targetH;
-    ctx.grayBuffer = allocateImageBuffer(pixelCount);
-
-    if (ctx.grayBuffer) {
-        memset(ctx.grayBuffer, 0xFF, pixelCount);
-        ctx.collectGrayscale = true;
-    } else {
-        free(ctx.grayBuffer);
-        ctx.grayBuffer = nullptr;
-        ctx.collectGrayscale = false;
-        Serial.println("DISPLAY: image grayscale buffer allocation failed, using direct ordered dither");
-    }
-
-    Serial.print("DISPLAY: jpeg ");
-    Serial.print(static_cast<int>(decoder.width));
-    Serial.print("x");
-    Serial.print(static_cast<int>(decoder.height));
-    Serial.print(" -> ");
-    Serial.print(targetW);
-    Serial.print("x");
-    Serial.print(targetH);
-    Serial.print(" scale=1/");
-    Serial.print(scaleDivisor);
-    Serial.print(" dither=");
-    Serial.println(ctx.collectGrayscale ? "floyd-steinberg" : "ordered-direct");
-
-    result = esp_rom_tjpgd_decomp(&decoder, jpegOutput, scale);
-    free(work);
-
-    if (result != JDR_OK) {
-        Serial.print("DISPLAY: jpeg decode failed: ");
-        Serial.println(static_cast<int>(result));
-        free(ctx.grayBuffer);
-        return false;
-    }
-
-    if (ctx.collectGrayscale) {
-        drawErrorDiffusedGrayscaleImage(
-            m_display,
-            ctx.grayBuffer,
-            ctx.drawX,
-            ctx.drawY,
-            ctx.destWidth,
-            ctx.destHeight
-        );
-    }
-
-    free(ctx.grayBuffer);
-
-    return true;
+    return ok;
 }
 
 const GFXfont *DisplayDriver::fontForStyle(const HtmlTextStyle &style) const {
-    if (style.size == HtmlTextSize::Heading1) {
-        if (style.bold && style.italic) return &FreeMonoBoldOblique18pt7b;
-        if (style.bold) return &FreeMonoBold18pt7b;
-        if (style.italic) return &FreeMonoOblique18pt7b;
-        return &FreeMono18pt7b;
-    }
-
-    if (style.size == HtmlTextSize::Heading2
-        || style.size == HtmlTextSize::Heading3
-        || style.size == HtmlTextSize::Large) {
-        if (style.bold && style.italic) return &FreeMonoBoldOblique12pt7b;
-        if (style.bold) return &FreeMonoBold12pt7b;
-        if (style.italic) return &FreeMonoOblique12pt7b;
-        return &FreeMono12pt7b;
-    }
-
-    if (style.bold && style.italic) return &FreeMonoBoldOblique9pt7b;
-    if (style.bold) return &FreeMonoBold9pt7b;
-    if (style.italic) return &FreeMonoOblique9pt7b;
-    return &FreeMono9pt7b;
+    return BookFontMetrics::fontForStyle(style);
 }
 
 int DisplayDriver::baselineOffsetForStyle(const HtmlTextStyle &style) const {
