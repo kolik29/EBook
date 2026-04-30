@@ -6,18 +6,6 @@
 
 #include <GxEPD2_4G_4G.h>
 #include <GxEPD2_4G_BW.h>
-#include <Fonts/FreeMono9pt7b.h>
-#include <Fonts/FreeMonoBold9pt7b.h>
-#include <Fonts/FreeMonoOblique9pt7b.h>
-#include <Fonts/FreeMonoBoldOblique9pt7b.h>
-#include <Fonts/FreeMono12pt7b.h>
-#include <Fonts/FreeMonoBold12pt7b.h>
-#include <Fonts/FreeMonoOblique12pt7b.h>
-#include <Fonts/FreeMonoBoldOblique12pt7b.h>
-#include <Fonts/FreeMono18pt7b.h>
-#include <Fonts/FreeMonoBold18pt7b.h>
-#include <Fonts/FreeMonoOblique18pt7b.h>
-#include <Fonts/FreeMonoBoldOblique18pt7b.h>
 
 #include "../models/HtmlRenderModels.h"
 

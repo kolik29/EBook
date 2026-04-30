@@ -1,4 +1,5 @@
 #include "TextPaginatorService.h"
+#include "BookTextCodec.h"
 
 TextPaginatorService::TextPaginatorService(
     int maxCharsPerLine,
@@ -69,7 +70,17 @@ void TextPaginatorService::appendParagraph(
             break;
         }
 
-        int end = start + m_maxCharsPerLine;
+        const String remaining = paragraph.substring(start);
+        String prefix = BookTextCodec::utf8PrefixByCodepoints(
+            remaining,
+            m_maxCharsPerLine
+        );
+
+        if (prefix.isEmpty()) {
+            prefix = paragraph.substring(start, start + 1);
+        }
+
+        int end = start + prefix.length();
 
         if (end >= paragraph.length()) {
             end = paragraph.length();
@@ -86,7 +97,7 @@ void TextPaginatorService::appendParagraph(
 
         appendLine(line, pages, currentPage, currentLineCount);
 
-        start = end + 1;
+        start = end;
     }
 }
 

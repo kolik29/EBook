@@ -1,17 +1,8 @@
 #include "BookFontMetrics.h"
 
-#include <Fonts/FreeSerif9pt7b.h>
-#include <Fonts/FreeSerifBold9pt7b.h>
-#include <Fonts/FreeSerifItalic9pt7b.h>
-#include <Fonts/FreeSerifBoldItalic9pt7b.h>
-#include <Fonts/FreeSerif12pt7b.h>
-#include <Fonts/FreeSerifBold12pt7b.h>
-#include <Fonts/FreeSerifItalic12pt7b.h>
-#include <Fonts/FreeSerifBoldItalic12pt7b.h>
-#include <Fonts/FreeSerif18pt7b.h>
-#include <Fonts/FreeSerifBold18pt7b.h>
-#include <Fonts/FreeSerifItalic18pt7b.h>
-#include <Fonts/FreeSerifBoldItalic18pt7b.h>
+#include "../fonts/BookSerifCp1251.h"
+#include "BookTextCodec.h"
+
 #include <pgmspace.h>
 
 namespace {
@@ -66,25 +57,25 @@ namespace {
 namespace BookFontMetrics {
     const GFXfont *fontForStyle(const HtmlTextStyle &style) {
         if (style.size == HtmlTextSize::Heading1) {
-            if (style.bold && style.italic) return &FreeSerifBoldItalic18pt7b;
-            if (style.bold) return &FreeSerifBold18pt7b;
-            if (style.italic) return &FreeSerifItalic18pt7b;
-            return &FreeSerif18pt7b;
+            if (style.bold && style.italic) return &BookSerifCp1251BoldItalic18pt;
+            if (style.bold) return &BookSerifCp1251Bold18pt;
+            if (style.italic) return &BookSerifCp1251Italic18pt;
+            return &BookSerifCp1251Regular18pt;
         }
 
         if (style.size == HtmlTextSize::Heading2
             || style.size == HtmlTextSize::Heading3
             || style.size == HtmlTextSize::Large) {
-            if (style.bold && style.italic) return &FreeSerifBoldItalic12pt7b;
-            if (style.bold) return &FreeSerifBold12pt7b;
-            if (style.italic) return &FreeSerifItalic12pt7b;
-            return &FreeSerif12pt7b;
+            if (style.bold && style.italic) return &BookSerifCp1251BoldItalic12pt;
+            if (style.bold) return &BookSerifCp1251Bold12pt;
+            if (style.italic) return &BookSerifCp1251Italic12pt;
+            return &BookSerifCp1251Regular12pt;
         }
 
-        if (style.bold && style.italic) return &FreeSerifBoldItalic9pt7b;
-        if (style.bold) return &FreeSerifBold9pt7b;
-        if (style.italic) return &FreeSerifItalic9pt7b;
-        return &FreeSerif9pt7b;
+        if (style.bold && style.italic) return &BookSerifCp1251BoldItalic9pt;
+        if (style.bold) return &BookSerifCp1251Bold9pt;
+        if (style.italic) return &BookSerifCp1251Italic9pt;
+        return &BookSerifCp1251Regular9pt;
     }
 
     int textWidth(const String &text, const HtmlTextStyle &style) {
@@ -92,16 +83,17 @@ namespace BookFontMetrics {
         const int fallbackPx = baseFallbackCharWidth(style);
         int width = 0;
 
-        for (int i = 0; i < text.length(); i++) {
-            const uint8_t c = static_cast<uint8_t>(text[i]);
+        int index = 0;
 
-            if (c == 0xC2 && i + 1 < text.length()
-                && static_cast<uint8_t>(text[i + 1]) == 0xA0) {
-                width += glyphAdvance(font, ' ', fallbackPx);
-                i++;
+        while (index < text.length()) {
+            uint32_t codepoint = 0;
+            const bool validUtf8 = BookTextCodec::readUtf8Codepoint(text, index, codepoint);
+
+            if (codepoint == '\n' || codepoint == '\r') {
                 continue;
             }
 
+            const uint8_t c = BookTextCodec::glyphCodeForCodepoint(codepoint, validUtf8);
             width += glyphAdvance(font, c, fallbackPx);
         }
 

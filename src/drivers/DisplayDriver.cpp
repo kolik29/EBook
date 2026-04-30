@@ -2,6 +2,7 @@
 
 #include "../config/Constants.h"
 #include "../services/BookFontMetrics.h"
+#include "../services/BookTextCodec.h"
 
 #include <esp_heap_caps.h>
 #include <esp_rom_tjpgd.h>
@@ -11,6 +12,19 @@
 #include <string.h>
 
 namespace {
+    template <typename DisplayT>
+    void printBookText(DisplayT &display, const String &text) {
+        display.print(BookTextCodec::encodeUtf8ToCp1251(text));
+    }
+
+    HtmlTextStyle textStyle(HtmlTextSize size, bool bold = false, bool italic = false) {
+        HtmlTextStyle style;
+        style.size = size;
+        style.bold = bold;
+        style.italic = italic;
+        return style;
+    }
+
     struct JpegDrawContext {
         const uint8_t *data = nullptr;
         File *file = nullptr;
@@ -493,11 +507,11 @@ void DisplayDriver::showMessage(const String &title, const String &message) {
         m_display.fillScreen(GxEPD_WHITE);
         m_display.setTextColor(GxEPD_BLACK);
 
-        m_display.setFont(&FreeMonoBold9pt7b);
+        m_display.setFont(BookFontMetrics::fontForStyle(textStyle(HtmlTextSize::Normal, true)));
         m_display.setCursor(40, 60);
-        m_display.print(title);
+        printBookText(m_display, title);
 
-        m_display.setFont(&FreeMono9pt7b);
+        m_display.setFont(BookFontMetrics::fontForStyle(textStyle(HtmlTextSize::Normal)));
         renderWrappedText(message, 40, 110, 52, 24);
     } while (m_display.nextPage());
 
@@ -560,9 +574,12 @@ void DisplayDriver::showTextPage(const String &title, const String &text, int pa
         m_displayBw.setTextColor(GxEPD_BLACK);
 
         // Заголовок
-        m_displayBw.setFont(&FreeMonoBold9pt7b);
+        const HtmlTextStyle titleStyle = textStyle(HtmlTextSize::Normal, true);
+        const HtmlTextStyle bodyStyle = textStyle(HtmlTextSize::Normal);
+
+        m_displayBw.setFont(BookFontMetrics::fontForStyle(titleStyle));
         m_displayBw.setCursor(marginLeft, titleY);
-        m_displayBw.print(title);
+        printBookText(m_displayBw, title);
 
         m_displayBw.drawLine(
             marginLeft,
@@ -573,7 +590,7 @@ void DisplayDriver::showTextPage(const String &title, const String &text, int pa
         );
 
         // Основной текст
-        m_displayBw.setFont(&FreeMono9pt7b);
+        m_displayBw.setFont(BookFontMetrics::fontForStyle(bodyStyle));
         renderPreformattedTextBw(text, textX, textY, lineHeight, maxLines);
 
         // Подвал
@@ -585,6 +602,7 @@ void DisplayDriver::showTextPage(const String &title, const String &text, int pa
             GxEPD_BLACK
         );
 
+        m_displayBw.setFont(BookFontMetrics::fontForStyle(bodyStyle));
         m_displayBw.setCursor(marginLeft, footerTextY);
         m_displayBw.print("Page ");
         m_displayBw.print(page);
@@ -641,9 +659,12 @@ void DisplayDriver::showHtmlPage(
         m_display.fillScreen(GxEPD_WHITE);
         m_display.setTextColor(GxEPD_BLACK);
 
-        m_display.setFont(&FreeMonoBold9pt7b);
+        const HtmlTextStyle titleStyle = textStyle(HtmlTextSize::Normal, true);
+        const HtmlTextStyle bodyStyle = textStyle(HtmlTextSize::Normal);
+
+        m_display.setFont(BookFontMetrics::fontForStyle(titleStyle));
         m_display.setCursor(marginLeft, titleY);
-        m_display.print(title);
+        printBookText(m_display, title);
 
         m_display.drawLine(
             marginLeft,
@@ -671,7 +692,7 @@ void DisplayDriver::showHtmlPage(
             GxEPD_BLACK
         );
 
-        m_display.setFont(&FreeMono9pt7b);
+        m_display.setFont(BookFontMetrics::fontForStyle(bodyStyle));
         m_display.setCursor(marginLeft, footerTextY);
         m_display.print("Page ");
         m_display.print(page);
@@ -697,7 +718,17 @@ void DisplayDriver::renderWrappedText(const String &text, int x, int y, int maxC
     int start = 0;
 
     while (start < text.length()) {
-        int end = start + maxCharsPerLine;
+        const String remaining = text.substring(start);
+        String prefix = BookTextCodec::utf8PrefixByCodepoints(
+            remaining,
+            maxCharsPerLine
+        );
+
+        if (prefix.isEmpty()) {
+            prefix = text.substring(start, start + 1);
+        }
+
+        int end = start + prefix.length();
 
         if (end >= text.length()) {
             end = text.length();
@@ -714,11 +745,14 @@ void DisplayDriver::renderWrappedText(const String &text, int x, int y, int maxC
 
         if (line.length() > 0) {
             m_display.setCursor(x, cursorY);
-            m_display.print(line);
+            printBookText(m_display, line);
             cursorY += lineHeight;
         }
 
-        start = end + 1;
+        start = end;
+        while (start < text.length() && text[start] == ' ') {
+            start++;
+        }
 
         if (cursorY > 430) {
             break;
@@ -749,7 +783,7 @@ void DisplayDriver::renderPreformattedText(
 
         if (!line.isEmpty()) {
             m_display.setCursor(x, cursorY);
-            m_display.print(line);
+            printBookText(m_display, line);
         }
 
         cursorY += lineHeight;
@@ -786,7 +820,7 @@ void DisplayDriver::renderPreformattedTextBw(
 
         if (!line.isEmpty()) {
             m_displayBw.setCursor(x, cursorY);
-            m_displayBw.print(line);
+            printBookText(m_displayBw, line);
         }
 
         cursorY += lineHeight;
@@ -931,9 +965,12 @@ void DisplayDriver::showHtmlPageBw(
         m_displayBw.fillScreen(GxEPD_WHITE);
         m_displayBw.setTextColor(GxEPD_BLACK);
 
-        m_displayBw.setFont(&FreeMonoBold9pt7b);
+        const HtmlTextStyle titleStyle = textStyle(HtmlTextSize::Normal, true);
+        const HtmlTextStyle bodyStyle = textStyle(HtmlTextSize::Normal);
+
+        m_displayBw.setFont(BookFontMetrics::fontForStyle(titleStyle));
         m_displayBw.setCursor(marginLeft, titleY);
-        m_displayBw.print(title);
+        printBookText(m_displayBw, title);
 
         m_displayBw.drawLine(
             marginLeft,
@@ -961,7 +998,7 @@ void DisplayDriver::showHtmlPageBw(
             GxEPD_BLACK
         );
 
-        m_displayBw.setFont(&FreeMono9pt7b);
+        m_displayBw.setFont(BookFontMetrics::fontForStyle(bodyStyle));
         m_displayBw.setCursor(marginLeft, footerTextY);
         m_displayBw.print("Page ");
         m_displayBw.print(page);
@@ -1076,7 +1113,7 @@ void DisplayDriver::renderHtmlTextLine(
 
         m_display.setFont(fontForStyle(run.style));
         m_display.setCursor(cursorX, baselineY);
-        m_display.print(run.text);
+        printBookText(m_display, run.text);
 
         if (run.style.underline) {
             m_display.drawLine(
@@ -1140,7 +1177,7 @@ void DisplayDriver::renderHtmlTextLineBw(
 
         m_displayBw.setFont(fontForStyle(run.style));
         m_displayBw.setCursor(cursorX, baselineY);
-        m_displayBw.print(run.text);
+        printBookText(m_displayBw, run.text);
 
         if (run.style.underline) {
             m_displayBw.drawLine(
@@ -1225,13 +1262,13 @@ void DisplayDriver::renderImagePlaceholder(
     m_display.drawLine(x, y, x + width, y + height, GxEPD_BLACK);
     m_display.drawLine(x + width, y, x, y + height, GxEPD_BLACK);
 
-    m_display.setFont(&FreeMono9pt7b);
+    m_display.setFont(BookFontMetrics::fontForStyle(textStyle(HtmlTextSize::Normal)));
     m_display.setCursor(x + 10, y + 24);
-    m_display.print(message);
+    printBookText(m_display, message);
 
     if (!element.altText.isEmpty() && height > 52) {
         m_display.setCursor(x + 10, y + 48);
-        m_display.print(element.altText.substring(0, 52));
+        printBookText(m_display, BookTextCodec::utf8PrefixByCodepoints(element.altText, 52));
     }
 }
 

@@ -5,6 +5,7 @@
 
 #include "../config/Constants.h"
 #include "BookFontMetrics.h"
+#include "BookTextCodec.h"
 
 namespace {
     constexpr int PARAGRAPH_FIRST_LINE_INDENT_PX = 30;
@@ -18,7 +19,8 @@ namespace {
         return value;
     }
 
-    int indexOfIgnoreCase(const String &text, const String &pattern, int fromIndex = 0) {
+    template <typename TextT>
+    int indexOfIgnoreCase(const TextT &text, const String &pattern, int fromIndex = 0) {
         if (pattern.isEmpty()) {
             return fromIndex <= text.length() ? fromIndex : -1;
         }
@@ -98,7 +100,26 @@ std::vector<HtmlRenderPage> HtmlPaginatorService::paginate(
     PageCollector collector;
     collector.pages = &pages;
 
-    paginateInternal(html, baseFilePath, collector);
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
+
+    if (pages.empty()) {
+        pages.push_back(HtmlRenderPage());
+    }
+
+    return pages;
+}
+
+std::vector<HtmlRenderPage> HtmlPaginatorService::paginate(
+    const std::string &html,
+    const String &baseFilePath
+) const {
+    std::vector<HtmlRenderPage> pages;
+    PageCollector collector;
+    collector.pages = &pages;
+
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
 
     if (pages.empty()) {
         pages.push_back(HtmlRenderPage());
@@ -109,7 +130,15 @@ std::vector<HtmlRenderPage> HtmlPaginatorService::paginate(
 
 int HtmlPaginatorService::countPages(const String &html, const String &baseFilePath) const {
     PageCollector collector;
-    paginateInternal(html, baseFilePath, collector);
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
+    return collector.pageCount > 0 ? collector.pageCount : 1;
+}
+
+int HtmlPaginatorService::countPages(const std::string &html, const String &baseFilePath) const {
+    PageCollector collector;
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
     return collector.pageCount > 0 ? collector.pageCount : 1;
 }
 
@@ -131,14 +160,40 @@ bool HtmlPaginatorService::paginatePage(
     collector.targetPage = &outPage;
     collector.targetPageIndex = pageIndex;
 
-    paginateInternal(html, baseFilePath, collector);
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
+    outPageCount = collector.pageCount > 0 ? collector.pageCount : 1;
+
+    return pageIndex < outPageCount;
+}
+
+bool HtmlPaginatorService::paginatePage(
+    const std::string &html,
+    const String &baseFilePath,
+    int pageIndex,
+    HtmlRenderPage &outPage,
+    int &outPageCount
+) const {
+    outPage = HtmlRenderPage();
+    outPageCount = 0;
+
+    if (pageIndex < 0) {
+        pageIndex = 0;
+    }
+
+    PageCollector collector;
+    collector.targetPage = &outPage;
+    collector.targetPageIndex = pageIndex;
+
+    BookHtmlView htmlView(html);
+    paginateInternal(htmlView, baseFilePath, collector);
     outPageCount = collector.pageCount > 0 ? collector.pageCount : 1;
 
     return pageIndex < outPageCount;
 }
 
 void HtmlPaginatorService::paginateInternal(
-    const String &html,
+    const BookHtmlView &html,
     const String &baseFilePath,
     PageCollector &collector
 ) const {
@@ -282,7 +337,7 @@ void HtmlPaginatorService::paginateInternal(
     pushPageIfNotEmpty(collector, currentPage, cursorY);
 }
 
-void HtmlPaginatorService::collectCssRules(const String &html, std::vector<CssRule> &rules) const {
+void HtmlPaginatorService::collectCssRules(const BookHtmlView &html, std::vector<CssRule> &rules) const {
     int searchPos = 0;
 
     while (true) {
@@ -359,7 +414,7 @@ void HtmlPaginatorService::appendCssRulesFromBlock(
 }
 
 bool HtmlPaginatorService::readTag(
-    const String &html,
+    const BookHtmlView &html,
     int start,
     TagInfo &tag,
     int &nextPos
@@ -665,6 +720,7 @@ void HtmlPaginatorService::appendText(
     }
 
     String decoded = decodeHtmlEntities(text);
+    decoded.replace("\xC2\xA0", " ");
     String word = "";
 
     for (int i = 0; i < decoded.length(); i++) {
@@ -770,7 +826,10 @@ void HtmlPaginatorService::appendWord(
                 maxChars = 1;
             }
 
-            String part = remaining.substring(0, maxChars);
+            String part = BookTextCodec::utf8PrefixByCodepoints(remaining, maxChars);
+            if (part.isEmpty()) {
+                part = remaining.substring(0, 1);
+            }
             remaining = remaining.substring(part.length());
 
             HtmlTextRun run;
@@ -1058,15 +1117,7 @@ bool HtmlPaginatorService::isIgnoredContentTag(const String &tagName) const {
 }
 
 String HtmlPaginatorService::decodeHtmlEntities(String value) const {
-    value.replace("&nbsp;", " ");
-    value.replace("&amp;", "&");
-    value.replace("&quot;", "\"");
-    value.replace("&apos;", "'");
-    value.replace("&lt;", "<");
-    value.replace("&gt;", ">");
-    value.replace("&#39;", "'");
-    value.replace("&#34;", "\"");
-    return value;
+    return BookTextCodec::decodeHtmlEntities(value);
 }
 
 String HtmlPaginatorService::resolveRelativePath(

@@ -89,7 +89,8 @@ bool EpubReaderService::openBook(const String &epubPath) {
     m_readerStatePath = getReaderStatePathForEpub(epubPath);
     m_currentSpineIndex = 0;
     m_currentPageIndex = 0;
-    m_currentPages.clear();
+    clearCurrentSpineCache();
+    clearCurrentRenderedPages();
     m_opened = false;
 
     if (!m_parser.parseBookStructure(epubPath, m_structure)) {
@@ -251,26 +252,12 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
         return false;
     }
 
-    String html;
     const String spineDescription = describeCurrentSpineItem();
     String readMessage = "reading spine item: ";
     readMessage += spineDescription;
     logBookLaunchAction(readMessage);
 
-    if (!m_parser.readSpineItemHtml(
-        m_epubPath,
-        m_structure.spine[m_currentSpineIndex],
-        html
-    )) {
-        Serial.println("READER: failed to read spine item");
-        String message = "Cannot read EPUB section ";
-        message += spineDescription;
-        message += ". ";
-        message += parserErrorOrFallback("No parser details available.");
-        failWithMessage(
-            "Read error",
-            message
-        );
+    if (!ensureCurrentSpineHtml()) {
         return false;
     }
 
@@ -293,7 +280,7 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
 
     try {
         m_paginator.paginatePage(
-            html,
+            m_currentSpineHtml,
             m_structure.spine[m_currentSpineIndex].path,
             m_currentPageIndex,
             currentPage,
@@ -313,7 +300,7 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
         return false;
     }
 
-    m_currentPages.clear();
+    clearCurrentRenderedPages();
     m_currentPages.push_back(std::move(currentPage));
 
     if (m_currentSpineIndex >= 0
@@ -340,7 +327,61 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
     return true;
 }
 
+bool EpubReaderService::ensureCurrentSpineHtml() {
+    if (m_cachedSpineIndex == m_currentSpineIndex && !m_currentSpineHtml.empty()) {
+        Serial.println("READER: using cached spine html");
+        logBookLaunchAction("using cached spine html");
+        return true;
+    }
+
+    clearCurrentRenderedPages();
+    clearCurrentSpineCache();
+
+    if (!m_parser.readSpineItemHtml(
+        m_epubPath,
+        m_structure.spine[m_currentSpineIndex],
+        m_currentSpineHtml
+    )) {
+        Serial.println("READER: failed to read spine item");
+        Serial.print("READER: parser error: ");
+        Serial.println(parserErrorOrFallback("No parser details available."));
+
+        String message = "Cannot read EPUB section ";
+        message += describeCurrentSpineItem();
+        message += ". ";
+        message += parserErrorOrFallback("No parser details available.");
+        failWithMessage(
+            "Read error",
+            message
+        );
+        clearCurrentSpineCache();
+        return false;
+    }
+
+    m_cachedSpineIndex = m_currentSpineIndex;
+
+    Serial.print("READER: cached spine html bytes = ");
+    Serial.println(static_cast<unsigned long>(m_currentSpineHtml.length()));
+
+    String message = "cached spine html bytes=";
+    message += String(static_cast<unsigned long>(m_currentSpineHtml.length()));
+    logBookLaunchAction(message);
+
+    return true;
+}
+
+void EpubReaderService::clearCurrentSpineCache() {
+    std::string emptyHtml;
+    std::swap(m_currentSpineHtml, emptyHtml);
+    m_cachedSpineIndex = -1;
+}
+
 void EpubReaderService::showCurrentPage() {
+    if (m_opened && m_currentPages.empty()) {
+        loadCurrentSpineItem(m_currentPageIndex);
+        return;
+    }
+
     renderCurrentPage();
 }
 
@@ -420,6 +461,13 @@ void EpubReaderService::renderCurrentPage() {
         m_totalPageCount,
         imageLoader
     );
+
+    clearCurrentRenderedPages();
+}
+
+void EpubReaderService::clearCurrentRenderedPages() {
+    std::vector<HtmlRenderPage> emptyPages;
+    std::swap(m_currentPages, emptyPages);
 }
 
 void EpubReaderService::nextPage() {
@@ -517,7 +565,7 @@ bool EpubReaderService::buildPageIndex() {
     String firstFailure = "";
 
     for (int i = 0; i < static_cast<int>(m_structure.spine.size()); i++) {
-        String html;
+        std::string html;
 
         if (!m_parser.readSpineItemHtml(
             m_epubPath,
@@ -569,7 +617,8 @@ bool EpubReaderService::buildPageIndex() {
             message += failure;
             logBookLaunchAction(message);
             m_spinePageCounts.push_back(0);
-            html = "";
+            std::string emptyHtml;
+            std::swap(html, emptyHtml);
             continue;
         } catch (...) {
             String failure = "section ";
@@ -587,7 +636,8 @@ bool EpubReaderService::buildPageIndex() {
             message += failure;
             logBookLaunchAction(message);
             m_spinePageCounts.push_back(0);
-            html = "";
+            std::string emptyHtml;
+            std::swap(html, emptyHtml);
             continue;
         }
 
@@ -605,7 +655,8 @@ bool EpubReaderService::buildPageIndex() {
         message += " pages=";
         message += String(pageCount);
         logBookLaunchAction(message);
-        html = "";
+        std::string emptyHtml;
+        std::swap(html, emptyHtml);
     }
 
     Serial.print("READER: total pages = ");

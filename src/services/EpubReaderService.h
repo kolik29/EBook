@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include <string>
 #include <vector>
 
 #include "EpubParserService.h"
@@ -54,9 +55,11 @@ private:
 
     int m_currentSpineIndex = 0;
     int m_currentPageIndex = 0;
+    int m_cachedSpineIndex = -1;
 
     bool m_opened = false;
 
+    std::string m_currentSpineHtml;
     std::vector<HtmlRenderPage> m_currentPages;
     std::vector<int> m_spinePageCounts;
     int m_totalPageCount = 0;
@@ -72,6 +75,9 @@ private:
     bool setPositionByGlobalPage(int globalPage);
 
     bool loadCurrentSpineItem(int preferredPageIndex = 0);
+    bool ensureCurrentSpineHtml();
+    void clearCurrentSpineCache();
+    void clearCurrentRenderedPages();
     void renderCurrentPage();
 
     int getGlobalPageNumber() const;

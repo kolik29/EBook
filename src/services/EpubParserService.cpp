@@ -1,10 +1,12 @@
 #include "EpubParserService.h"
+#include "BookTextCodec.h"
 
 #include <Arduino.h>
 #include <rom/miniz.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 
 namespace {
     constexpr uint32_t ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50UL;
@@ -13,6 +15,7 @@ namespace {
     constexpr size_t ZIP_EOCD_MIN_SIZE = 22;
     constexpr size_t ZIP_MAX_COMMENT_SIZE = 0xFFFF;
     constexpr size_t ZIP_EOCD_SEARCH_WINDOW = ZIP_EOCD_MIN_SIZE + ZIP_MAX_COMMENT_SIZE;
+    constexpr size_t ZIP_INFLATE_INPUT_CHUNK = 1024;
 
     uint16_t readLe16(const uint8_t *buf) {
         return static_cast<uint16_t>(buf[0])
@@ -74,6 +77,97 @@ namespace {
         free(buffer);
 
         return true;
+    }
+
+    bool inflateZipEntryFromFile(
+        File &file,
+        const String &entryName,
+        uint32_t compressedSize,
+        uint32_t uncompressedSize,
+        uint8_t *outputData,
+        String &errorDetail
+    ) {
+        tinfl_decompressor decompressor;
+        tinfl_init(&decompressor);
+
+        uint8_t inputBuffer[ZIP_INFLATE_INPUT_CHUNK];
+        size_t inputAvailable = 0;
+        size_t inputOffset = 0;
+        size_t outputOffset = 0;
+        uint32_t compressedRemaining = compressedSize;
+
+        while (true) {
+            if (inputOffset >= inputAvailable && compressedRemaining > 0) {
+                const size_t nextChunk = compressedRemaining > ZIP_INFLATE_INPUT_CHUNK
+                    ? ZIP_INFLATE_INPUT_CHUNK
+                    : compressedRemaining;
+                inputAvailable = file.read(inputBuffer, nextChunk);
+                inputOffset = 0;
+
+                if (inputAvailable == 0) {
+                    errorDetail = entryName + " read returned 0 during inflate";
+                    return false;
+                }
+
+                compressedRemaining -= static_cast<uint32_t>(inputAvailable);
+            }
+
+            size_t inputSize = inputAvailable - inputOffset;
+            size_t outputSize = uncompressedSize - outputOffset;
+            mz_uint32 flags = TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+
+            if (compressedRemaining > 0) {
+                flags |= TINFL_FLAG_HAS_MORE_INPUT;
+            }
+
+            const tinfl_status status = tinfl_decompress(
+                &decompressor,
+                inputBuffer + inputOffset,
+                &inputSize,
+                outputData,
+                outputData + outputOffset,
+                &outputSize,
+                flags
+            );
+
+            inputOffset += inputSize;
+            outputOffset += outputSize;
+
+            if (status == TINFL_STATUS_DONE) {
+                if (outputOffset != uncompressedSize) {
+                    errorDetail = entryName;
+                    errorDetail += " output=";
+                    errorDetail += String(static_cast<unsigned long>(outputOffset));
+                    errorDetail += " expected=";
+                    errorDetail += String(static_cast<unsigned long>(uncompressedSize));
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (status < 0) {
+                errorDetail = entryName;
+                errorDetail += " status=";
+                errorDetail += String(static_cast<int>(status));
+                errorDetail += " output=";
+                errorDetail += String(static_cast<unsigned long>(outputOffset));
+                return false;
+            }
+
+            if (status == TINFL_STATUS_HAS_MORE_OUTPUT
+                && outputOffset >= uncompressedSize) {
+                errorDetail = entryName + " output buffer exhausted";
+                return false;
+            }
+
+            if (status == TINFL_STATUS_NEEDS_MORE_INPUT
+                && compressedRemaining == 0
+                && inputOffset >= inputAvailable) {
+                errorDetail = entryName + " input exhausted";
+                return false;
+            }
+        }
     }
 
     bool findEndOfCentralDirectory(
@@ -191,48 +285,29 @@ bool EpubParserService::extractZipEntryData(
         return true;
     }
 
-    uint8_t *compressedData = static_cast<uint8_t *>(malloc(entry.compressedSize));
-    if (!compressedData) {
-        Serial.println("EPUB: failed to allocate compressed buffer");
-        setLastError("Not enough memory for compressed ZIP entry", entry.name);
-        return false;
-    }
-
-    if (!readExact(file, compressedData, entry.compressedSize)) {
-        Serial.println("EPUB: failed to read compressed entry data");
-        setLastError("Cannot read compressed ZIP entry data", entry.name);
-        free(compressedData);
-        return false;
-    }
-
     uint8_t *outputData = static_cast<uint8_t *>(malloc(entry.uncompressedSize + 1));
     if (!outputData) {
         Serial.println("EPUB: failed to allocate output buffer");
         setLastError("Not enough memory to inflate ZIP entry", entry.name);
-        free(compressedData);
         return false;
     }
 
     bool ok = false;
 
     if (entry.method == 8) {
-        const size_t result = tinfl_decompress_mem_to_mem(
-            outputData,
-            entry.uncompressedSize,
-            compressedData,
+        String detail;
+        ok = inflateZipEntryFromFile(
+            file,
+            entry.name,
             entry.compressedSize,
-            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
+            entry.uncompressedSize,
+            outputData,
+            detail
         );
 
-        ok = (result != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED)
-            && (result == entry.uncompressedSize);
-
         if (!ok) {
-            Serial.print("EPUB: deflate decompression failed, result=");
-            Serial.println(static_cast<unsigned long>(result));
-            String detail = entry.name;
-            detail += " result=";
-            detail += String(static_cast<unsigned long>(result));
+            Serial.print("EPUB: deflate decompression failed: ");
+            Serial.println(detail);
             setLastError("Deflate decompression failed", detail);
         }
     } else {
@@ -243,8 +318,6 @@ bool EpubParserService::extractZipEntryData(
         detail += String(entry.method);
         setLastError("Unsupported ZIP compression method", detail);
     }
-
-    free(compressedData);
 
     if (!ok) {
         free(outputData);
@@ -590,6 +663,85 @@ bool EpubParserService::extractZipEntryText(
     return true;
 }
 
+bool EpubParserService::extractZipEntryText(
+    File &file,
+    const ZipEntryInfo &entry,
+    size_t maxSize,
+    std::string &outText
+) {
+    outText.clear();
+
+    if (entry.isDirectory) {
+        setLastError("ZIP entry is a directory", entry.name);
+        return false;
+    }
+
+    if (entry.uncompressedSize == 0 || entry.uncompressedSize > maxSize) {
+        Serial.println("EPUB: text entry too large or empty");
+        String detail = entry.name;
+        detail += " size=";
+        detail += String(static_cast<unsigned long>(entry.uncompressedSize));
+        detail += " max=";
+        detail += String(static_cast<unsigned long>(maxSize));
+        setLastError("ZIP text entry is empty or too large", detail);
+        return false;
+    }
+
+    if (entry.method != 0 && entry.method != 8) {
+        Serial.print("EPUB: unsupported compression method: ");
+        Serial.println(entry.method);
+        String detail = entry.name;
+        detail += " method=";
+        detail += String(entry.method);
+        setLastError("Unsupported ZIP compression method", detail);
+        return false;
+    }
+
+    if (!seekToZipEntryPayload(file, entry)) {
+        return false;
+    }
+
+    try {
+        outText.resize(static_cast<size_t>(entry.uncompressedSize));
+    } catch (...) {
+        Serial.println("EPUB: failed to allocate text buffer");
+        outText.clear();
+        setLastError("Not enough memory to create text buffer", entry.name);
+        return false;
+    }
+
+    uint8_t *outputData = reinterpret_cast<uint8_t *>(&outText[0]);
+
+    if (entry.method == 0) {
+        if (!readExact(file, outputData, entry.uncompressedSize)) {
+            Serial.println("EPUB: failed to read stored text entry data");
+            outText.clear();
+            setLastError("Cannot read stored ZIP text entry data", entry.name);
+            return false;
+        }
+
+        return true;
+    }
+
+    String detail;
+    if (!inflateZipEntryFromFile(
+        file,
+        entry.name,
+        entry.compressedSize,
+        entry.uncompressedSize,
+        outputData,
+        detail
+    )) {
+        Serial.print("EPUB: deflate text decompression failed: ");
+        Serial.println(detail);
+        outText.clear();
+        setLastError("Deflate text decompression failed", detail);
+        return false;
+    }
+
+    return true;
+}
+
 bool EpubParserService::findRootFilePath(const String &containerXml, String &outRootFilePath) const {
     outRootFilePath = "";
 
@@ -913,15 +1065,7 @@ String EpubParserService::extractXmlAttributeValue(
 }
 
 String EpubParserService::decodeXmlEntities(String value) const {
-    value.replace("&amp;", "&");
-    value.replace("&quot;", "\"");
-    value.replace("&apos;", "'");
-    value.replace("&lt;", "<");
-    value.replace("&gt;", ">");
-    value.replace("&#39;", "'");
-    value.replace("&#34;", "\"");
-
-    return value;
+    return BookTextCodec::decodeHtmlEntities(value);
 }
 
 String EpubParserService::normalizePath(const String &path) const {
@@ -1075,14 +1219,7 @@ namespace {
         removeBlocks(html, "<script", "</script>");
         
         html.replace("\r", "\n");
-        html.replace("&nbsp;", " ");
-        html.replace("&amp;", "&");
-        html.replace("&quot;", "\"");
-        html.replace("&apos;", "'");
-        html.replace("&lt;", "<");
-        html.replace("&gt;", ">");
-        html.replace("&#39;", "'");
-        html.replace("&#34;", "\"");
+        html = BookTextCodec::decodeHtmlEntities(html);
 
         String result = "";
         bool insideTag = false;
@@ -1405,6 +1542,61 @@ bool EpubParserService::readSpineItemHtml(
     Serial.println(html.length());
 
     if (html.isEmpty()) {
+        setLastError("EPUB spine document is empty", item.path);
+        return false;
+    }
+
+    return true;
+}
+
+bool EpubParserService::readSpineItemHtml(
+    const String &epubPath,
+    const EpubSpineItem &item,
+    std::string &html
+) {
+    clearLastError();
+    html.clear();
+
+    if (item.path.isEmpty()) {
+        Serial.println("EPUB: empty spine item path");
+        setLastError("Spine item path is empty");
+        return false;
+    }
+
+    File epubFile = m_fs.open(epubPath, "r");
+    if (!epubFile || epubFile.isDirectory()) {
+        Serial.print("EPUB: failed to open file: ");
+        Serial.println(epubPath);
+        setLastError("Cannot open EPUB file", epubPath);
+        return false;
+    }
+
+    ZipEntryInfo spineEntry;
+    if (!findZipEntry(epubFile, item.path.c_str(), spineEntry)) {
+        Serial.print("EPUB: spine entry not found: ");
+        Serial.println(item.path);
+        setLastErrorIfEmpty("EPUB spine document was not found in archive", item.path);
+        epubFile.close();
+        return false;
+    }
+
+    if (!extractZipEntryText(epubFile, spineEntry, 512 * 1024, html)) {
+        Serial.print("EPUB: failed to extract spine entry: ");
+        Serial.println(item.path);
+        setLastErrorIfEmpty("Cannot read EPUB spine document", item.path);
+        epubFile.close();
+        return false;
+    }
+
+    epubFile.close();
+
+    Serial.print("EPUB: read spine item: ");
+    Serial.println(item.path);
+
+    Serial.print("EPUB: html length = ");
+    Serial.println(static_cast<unsigned long>(html.length()));
+
+    if (html.empty()) {
         setLastError("EPUB spine document is empty", item.path);
         return false;
     }

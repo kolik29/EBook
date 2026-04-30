@@ -8,6 +8,8 @@
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <new>
+#include <string>
+#include <utility>
 
 #include "../config/Constants.h"
 #include "../models/EpubModels.h"
@@ -610,7 +612,7 @@ bool WebServerService::begin(
                     bool pageIndexComplete = true;
 
                     for (const EpubSpineItem &spineItem : structure.spine) {
-                        String spineHtml;
+                        std::string spineHtml;
                         if (epubParser.readSpineItemHtml(epubPath, spineItem, spineHtml)) {
                             int cnt = 0;
 
@@ -635,7 +637,8 @@ bool WebServerService::begin(
                             spineCounts.push_back(0);
                         }
 
-                        spineHtml = "";
+                        std::string emptySpineHtml;
+                        std::swap(spineHtml, emptySpineHtml);
                     }
 
                     if (totalPages > 0 && pageIndexComplete) {

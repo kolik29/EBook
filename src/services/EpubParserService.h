@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include <string>
 
 #include "../models/EpubModels.h"
 
@@ -19,6 +20,7 @@ public:
 
     bool parseBookStructure(const String &epubPath, EpubBookStructure &structure);
     bool readSpineItemHtml(const String &epubPath, const EpubSpineItem &item, String &html);
+    bool readSpineItemHtml(const String &epubPath, const EpubSpineItem &item, std::string &html);
     bool readSpineItemText(const String &epubPath, const EpubSpineItem &item, String &text);
     bool extractResourceData(
         const String &epubPath,
@@ -69,6 +71,12 @@ private:
         const ZipEntryInfo &entry,
         size_t maxSize,
         String &outText
+    );
+    bool extractZipEntryText(
+        File &file,
+        const ZipEntryInfo &entry,
+        size_t maxSize,
+        std::string &outText
     );
     bool seekToZipEntryPayload(File &file, const ZipEntryInfo &entry);
 

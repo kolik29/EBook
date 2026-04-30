@@ -1,18 +1,29 @@
 #pragma once
 
 #include <Arduino.h>
+#include <string>
 #include <vector>
 
 #include "../models/HtmlRenderModels.h"
+#include "BookHtmlView.h"
 
 class HtmlPaginatorService {
 public:
     HtmlPaginatorService(int pageWidthPx, int pageHeightPx);
 
     std::vector<HtmlRenderPage> paginate(const String &html, const String &baseFilePath) const;
+    std::vector<HtmlRenderPage> paginate(const std::string &html, const String &baseFilePath) const;
     int countPages(const String &html, const String &baseFilePath) const;
+    int countPages(const std::string &html, const String &baseFilePath) const;
     bool paginatePage(
         const String &html,
+        const String &baseFilePath,
+        int pageIndex,
+        HtmlRenderPage &outPage,
+        int &outPageCount
+    ) const;
+    bool paginatePage(
+        const std::string &html,
         const String &baseFilePath,
         int pageIndex,
         HtmlRenderPage &outPage,
@@ -51,15 +62,15 @@ private:
     int m_pageHeightPx;
 
     void paginateInternal(
-        const String &html,
+        const BookHtmlView &html,
         const String &baseFilePath,
         PageCollector &collector
     ) const;
 
-    void collectCssRules(const String &html, std::vector<CssRule> &rules) const;
+    void collectCssRules(const BookHtmlView &html, std::vector<CssRule> &rules) const;
     void appendCssRulesFromBlock(const String &css, std::vector<CssRule> &rules) const;
 
-    bool readTag(const String &html, int start, TagInfo &tag, int &nextPos) const;
+    bool readTag(const BookHtmlView &html, int start, TagInfo &tag, int &nextPos) const;
     String getAttributeValue(const String &rawTag, const String &attributeName) const;
     String getCssDeclarationValue(const String &declarations, const String &propertyName) const;
 
