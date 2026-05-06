@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "../config/Pins.h"
 #include "../config/Constants.h"
+#include "../utils/DebugLog.h"
 
 App::App()
     : m_nextButton(
@@ -176,6 +177,10 @@ void App::handleBothButtonsHold() {
         Serial.println("BOTH buttons long press -> WIFI MODE");
 
         if (!m_wifiService.isEnabled()) {
+            if (m_epubReaderService) {
+                m_epubReaderService->releaseMemoryForWifi();
+            }
+
             m_wifiService.enable();
         } else {
             Serial.println("WIFI already enabled");

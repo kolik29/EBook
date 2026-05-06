@@ -96,6 +96,8 @@ private:
     void renderImagePlaceholder(const HtmlRenderElement &element, int x, int y, int width, int height, const String &message);
     bool drawJpegData(const uint8_t *data, size_t size, int x, int y, int maxWidth, int maxHeight);
     bool drawJpegFile(const String &path, int x, int y, int maxWidth, int maxHeight);
+    bool drawPngData(const uint8_t *data, size_t size, int x, int y, int maxWidth, int maxHeight);
+    bool drawPngFile(const String &path, int x, int y, int maxWidth, int maxHeight);
     const GFXfont *fontForStyle(const HtmlTextStyle &style) const;
     int baselineOffsetForStyle(const HtmlTextStyle &style) const;
     void wake();

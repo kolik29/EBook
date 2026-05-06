@@ -149,28 +149,78 @@ bool HtmlPaginatorService::paginatePage(
     HtmlRenderPage &outPage,
     int &outPageCount
 ) const {
-    outPage = HtmlRenderPage();
-    outPageCount = 0;
-
-    if (pageIndex < 0) {
-        pageIndex = 0;
-    }
-
-    PageCollector collector;
-    collector.targetPage = &outPage;
-    collector.targetPageIndex = pageIndex;
-
     BookHtmlView htmlView(html);
-    paginateInternal(htmlView, baseFilePath, collector);
-    outPageCount = collector.pageCount > 0 ? collector.pageCount : 1;
+    return paginatePageFromView(
+        htmlView,
+        baseFilePath,
+        pageIndex,
+        0,
+        outPage,
+        outPageCount
+    );
+}
 
-    return pageIndex < outPageCount;
+bool HtmlPaginatorService::paginatePage(
+    const String &html,
+    const String &baseFilePath,
+    int pageIndex,
+    int knownPageCount,
+    HtmlRenderPage &outPage,
+    int &outPageCount
+) const {
+    BookHtmlView htmlView(html);
+    return paginatePageFromView(
+        htmlView,
+        baseFilePath,
+        pageIndex,
+        knownPageCount,
+        outPage,
+        outPageCount
+    );
 }
 
 bool HtmlPaginatorService::paginatePage(
     const std::string &html,
     const String &baseFilePath,
     int pageIndex,
+    HtmlRenderPage &outPage,
+    int &outPageCount
+) const {
+    BookHtmlView htmlView(html);
+    return paginatePageFromView(
+        htmlView,
+        baseFilePath,
+        pageIndex,
+        0,
+        outPage,
+        outPageCount
+    );
+}
+
+bool HtmlPaginatorService::paginatePage(
+    const std::string &html,
+    const String &baseFilePath,
+    int pageIndex,
+    int knownPageCount,
+    HtmlRenderPage &outPage,
+    int &outPageCount
+) const {
+    BookHtmlView htmlView(html);
+    return paginatePageFromView(
+        htmlView,
+        baseFilePath,
+        pageIndex,
+        knownPageCount,
+        outPage,
+        outPageCount
+    );
+}
+
+bool HtmlPaginatorService::paginatePageFromView(
+    const BookHtmlView &html,
+    const String &baseFilePath,
+    int pageIndex,
+    int knownPageCount,
     HtmlRenderPage &outPage,
     int &outPageCount
 ) const {
@@ -184,12 +234,16 @@ bool HtmlPaginatorService::paginatePage(
     PageCollector collector;
     collector.targetPage = &outPage;
     collector.targetPageIndex = pageIndex;
+    collector.knownPageCount = knownPageCount > 0 ? knownPageCount : 0;
+    collector.stopAfterTargetPage = collector.knownPageCount > 0;
 
-    BookHtmlView htmlView(html);
-    paginateInternal(htmlView, baseFilePath, collector);
-    outPageCount = collector.pageCount > 0 ? collector.pageCount : 1;
+    paginateInternal(html, baseFilePath, collector);
+    outPageCount = collector.knownPageCount > 0
+        ? collector.knownPageCount
+        : (collector.pageCount > 0 ? collector.pageCount : 1);
 
-    return pageIndex < outPageCount;
+    return pageIndex < outPageCount
+        && (collector.targetPageFound || pageIndex == 0);
 }
 
 void HtmlPaginatorService::paginateInternal(
@@ -212,7 +266,7 @@ void HtmlPaginatorService::paginateInternal(
 
     styleStack.push_back(currentStyle);
 
-    while (pos < html.length()) {
+    while (pos < html.length() && !collector.stop) {
         const int tagStart = html.indexOf('<', pos);
 
         if (tagStart < 0) {
@@ -333,8 +387,13 @@ void HtmlPaginatorService::paginateInternal(
         pos = nextPos;
     }
 
-    flushLine(collector, currentPage, line, cursorY);
-    pushPageIfNotEmpty(collector, currentPage, cursorY);
+    if (!collector.stop) {
+        flushLine(collector, currentPage, line, cursorY);
+    }
+
+    if (!collector.stop) {
+        pushPageIfNotEmpty(collector, currentPage, cursorY);
+    }
 }
 
 void HtmlPaginatorService::collectCssRules(const BookHtmlView &html, std::vector<CssRule> &rules) const {
@@ -715,7 +774,7 @@ void HtmlPaginatorService::appendText(
     int &cursorY,
     int &pendingFirstLineIndentPx
 ) const {
-    if (style.hidden || text.isEmpty()) {
+    if (collector.stop || style.hidden || text.isEmpty()) {
         return;
     }
 
@@ -738,6 +797,10 @@ void HtmlPaginatorService::appendText(
                     pendingFirstLineIndentPx
                 );
                 word = "";
+
+                if (collector.stop) {
+                    return;
+                }
             }
             continue;
         }
@@ -767,7 +830,7 @@ void HtmlPaginatorService::appendWord(
     int &cursorY,
     int &pendingFirstLineIndentPx
 ) const {
-    if (word.isEmpty()) {
+    if (collector.stop || word.isEmpty()) {
         return;
     }
 
@@ -784,6 +847,9 @@ void HtmlPaginatorService::appendWord(
 
     if (line.active && line.widthPx + spaceWidth + wordWidth > availableWidth) {
         flushLine(collector, currentPage, line, cursorY, true);
+        if (collector.stop) {
+            return;
+        }
         availableWidth = m_pageWidthPx - style.indentPx;
     }
 
@@ -841,6 +907,9 @@ void HtmlPaginatorService::appendWord(
 
             if (!remaining.isEmpty()) {
                 flushLine(collector, currentPage, line, cursorY);
+                if (collector.stop) {
+                    return;
+                }
                 line.active = true;
                 line.style = style;
                 line.heightPx = lineHeight(style);
@@ -877,6 +946,10 @@ void HtmlPaginatorService::flushLine(
     }
 
     finishPageIfNeeded(line.heightPx, collector, currentPage, cursorY);
+    if (collector.stop) {
+        line = CurrentLine();
+        return;
+    }
 
     HtmlRenderElement element;
     element.type = HtmlElementType::TextLine;
@@ -900,12 +973,18 @@ void HtmlPaginatorService::addSpacer(
     int &cursorY
 ) const {
     flushLine(collector, currentPage, line, cursorY);
+    if (collector.stop) {
+        return;
+    }
 
     if (heightPx <= 0 || currentPage.elements.empty()) {
         return;
     }
 
     finishPageIfNeeded(heightPx, collector, currentPage, cursorY);
+    if (collector.stop) {
+        return;
+    }
 
     HtmlRenderElement element;
     element.type = HtmlElementType::Spacer;
@@ -921,7 +1000,14 @@ void HtmlPaginatorService::addRule(
     int &cursorY
 ) const {
     flushLine(collector, currentPage, line, cursorY);
+    if (collector.stop) {
+        return;
+    }
+
     finishPageIfNeeded(18, collector, currentPage, cursorY);
+    if (collector.stop) {
+        return;
+    }
 
     HtmlRenderElement element;
     element.type = HtmlElementType::Rule;
@@ -942,6 +1028,9 @@ void HtmlPaginatorService::addImage(
     int &cursorY
 ) const {
     flushLine(collector, currentPage, line, cursorY);
+    if (collector.stop) {
+        return;
+    }
 
     if (style.hidden) {
         return;
@@ -974,9 +1063,18 @@ void HtmlPaginatorService::addImage(
 
     const int styleHeight = parseCssPx(getCssDeclarationValue(inlineStyle, "height"), 0, m_pageHeightPx);
     const int heightAttr = parseCssPx(getAttributeValue(rawTag, "height"), 0, m_pageHeightPx);
+    String srcLower = src;
+    String altLower = getAttributeValue(rawTag, "alt");
+    srcLower.toLowerCase();
+    altLower.toLowerCase();
+
+    const bool looksLikeCover =
+        srcLower.indexOf("cover") >= 0 || altLower.indexOf("cover") >= 0;
     int imageHeight = heightAttr > 0
         ? heightAttr
-        : (styleHeight > 0 ? styleHeight : Constants::HTML_DEFAULT_IMAGE_HEIGHT_PX);
+        : (styleHeight > 0
+            ? styleHeight
+            : (looksLikeCover ? m_pageHeightPx : Constants::HTML_DEFAULT_IMAGE_HEIGHT_PX));
 
     if (imageHeight > m_pageHeightPx) {
         imageHeight = m_pageHeightPx;
@@ -984,6 +1082,9 @@ void HtmlPaginatorService::addImage(
 
     const int blockHeight = imageHeight + 10;
     finishPageIfNeeded(blockHeight, collector, currentPage, cursorY);
+    if (collector.stop) {
+        return;
+    }
 
     HtmlRenderElement element;
     element.type = HtmlElementType::Image;
@@ -1021,9 +1122,18 @@ void HtmlPaginatorService::pushPageIfNotEmpty(
             collector.pages->push_back(std::move(currentPage));
         } else if (collector.targetPage && pageIndex == collector.targetPageIndex) {
             *collector.targetPage = std::move(currentPage);
+            collector.targetPageFound = true;
         }
 
         collector.pageCount++;
+
+        if (collector.stopAfterTargetPage && pageIndex == collector.targetPageIndex) {
+            if (collector.knownPageCount > collector.pageCount) {
+                collector.pageCount = collector.knownPageCount;
+            }
+
+            collector.stop = true;
+        }
     }
 
     currentPage = HtmlRenderPage();

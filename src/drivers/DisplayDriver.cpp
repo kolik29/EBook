@@ -1,3 +1,4 @@
+#include "../utils/DebugLog.h"
 #include "DisplayDriver.h"
 
 #include "../config/Constants.h"
@@ -7,6 +8,7 @@
 #include <esp_heap_caps.h>
 #include <esp_rom_tjpgd.h>
 #include <FS.h>
+#include <rom/miniz.h>
 #include <SD.h>
 #include <stdlib.h>
 #include <string.h>
@@ -223,6 +225,353 @@ namespace {
 
         free(currentErrors);
         free(nextErrors);
+    }
+
+    struct PngDecodeInfo {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint8_t bitDepth = 0;
+        uint8_t colorType = 0;
+        uint8_t interlace = 0;
+        std::vector<uint8_t> idat;
+        const uint8_t *palette = nullptr;
+        size_t paletteSize = 0;
+        const uint8_t *transparency = nullptr;
+        size_t transparencySize = 0;
+    };
+
+    uint32_t readBe32(const uint8_t *p) {
+        return (static_cast<uint32_t>(p[0]) << 24)
+            | (static_cast<uint32_t>(p[1]) << 16)
+            | (static_cast<uint32_t>(p[2]) << 8)
+            | static_cast<uint32_t>(p[3]);
+    }
+
+    bool pngChunkTypeEquals(const uint8_t *type, const char *name) {
+        return type[0] == static_cast<uint8_t>(name[0])
+            && type[1] == static_cast<uint8_t>(name[1])
+            && type[2] == static_cast<uint8_t>(name[2])
+            && type[3] == static_cast<uint8_t>(name[3]);
+    }
+
+    int pngBytesPerPixel(uint8_t colorType) {
+        switch (colorType) {
+            case 0: return 1; // grayscale
+            case 2: return 3; // RGB
+            case 3: return 1; // palette index
+            case 4: return 2; // grayscale + alpha
+            case 6: return 4; // RGBA
+            default: return 0;
+        }
+    }
+
+    uint8_t paethPredictor(uint8_t a, uint8_t b, uint8_t c) {
+        const int p = static_cast<int>(a) + static_cast<int>(b) - static_cast<int>(c);
+        const int pa = abs(p - static_cast<int>(a));
+        const int pb = abs(p - static_cast<int>(b));
+        const int pc = abs(p - static_cast<int>(c));
+
+        if (pa <= pb && pa <= pc) return a;
+        if (pb <= pc) return b;
+        return c;
+    }
+
+    bool unfilterPngRow(
+        uint8_t filter,
+        uint8_t *row,
+        const uint8_t *prevRow,
+        size_t rowBytes,
+        int bpp
+    ) {
+        for (size_t i = 0; i < rowBytes; i++) {
+            const uint8_t left = i >= static_cast<size_t>(bpp) ? row[i - bpp] : 0;
+            const uint8_t up = prevRow ? prevRow[i] : 0;
+            const uint8_t upLeft =
+                (prevRow && i >= static_cast<size_t>(bpp)) ? prevRow[i - bpp] : 0;
+
+            switch (filter) {
+                case 0:
+                    break;
+                case 1:
+                    row[i] = static_cast<uint8_t>(row[i] + left);
+                    break;
+                case 2:
+                    row[i] = static_cast<uint8_t>(row[i] + up);
+                    break;
+                case 3:
+                    row[i] = static_cast<uint8_t>(
+                        row[i] + ((static_cast<int>(left) + static_cast<int>(up)) >> 1)
+                    );
+                    break;
+                case 4:
+                    row[i] = static_cast<uint8_t>(row[i] + paethPredictor(left, up, upLeft));
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    uint8_t alphaBlendWithWhite(uint8_t gray, uint8_t alpha) {
+        return static_cast<uint8_t>(
+            ((static_cast<uint16_t>(gray) * alpha)
+                + (255U * static_cast<uint16_t>(255U - alpha))
+                + 127U) / 255U
+        );
+    }
+
+    uint8_t pngPixelGray(
+        const PngDecodeInfo &png,
+        const uint8_t *row,
+        uint32_t x
+    ) {
+        switch (png.colorType) {
+            case 0: {
+                uint8_t gray = row[x];
+                if (png.transparencySize >= 2) {
+                    const uint16_t transparentGray =
+                        (static_cast<uint16_t>(png.transparency[0]) << 8)
+                            | png.transparency[1];
+                    if (transparentGray == gray) {
+                        gray = 255;
+                    }
+                }
+                return gray;
+            }
+            case 2: {
+                const uint8_t *px = row + static_cast<size_t>(x) * 3;
+                uint8_t alpha = 255;
+                if (png.transparencySize >= 6) {
+                    const uint16_t tr =
+                        (static_cast<uint16_t>(png.transparency[0]) << 8)
+                            | png.transparency[1];
+                    const uint16_t tg =
+                        (static_cast<uint16_t>(png.transparency[2]) << 8)
+                            | png.transparency[3];
+                    const uint16_t tb =
+                        (static_cast<uint16_t>(png.transparency[4]) << 8)
+                            | png.transparency[5];
+                    if (tr == px[0] && tg == px[1] && tb == px[2]) {
+                        alpha = 0;
+                    }
+                }
+
+                const uint8_t gray = static_cast<uint8_t>(
+                    (static_cast<uint16_t>(px[0]) * 30
+                        + static_cast<uint16_t>(px[1]) * 59
+                        + static_cast<uint16_t>(px[2]) * 11) / 100
+                );
+                return alphaBlendWithWhite(gray, alpha);
+            }
+            case 3: {
+                const uint8_t index = row[x];
+                const size_t paletteOffset = static_cast<size_t>(index) * 3;
+                if (!png.palette || paletteOffset + 2 >= png.paletteSize) {
+                    return 255;
+                }
+
+                const uint8_t alpha =
+                    index < png.transparencySize ? png.transparency[index] : 255;
+                const uint8_t gray = static_cast<uint8_t>(
+                    (static_cast<uint16_t>(png.palette[paletteOffset]) * 30
+                        + static_cast<uint16_t>(png.palette[paletteOffset + 1]) * 59
+                        + static_cast<uint16_t>(png.palette[paletteOffset + 2]) * 11) / 100
+                );
+                return alphaBlendWithWhite(gray, alpha);
+            }
+            case 4: {
+                const uint8_t *px = row + static_cast<size_t>(x) * 2;
+                return alphaBlendWithWhite(px[0], px[1]);
+            }
+            case 6: {
+                const uint8_t *px = row + static_cast<size_t>(x) * 4;
+                const uint8_t gray = static_cast<uint8_t>(
+                    (static_cast<uint16_t>(px[0]) * 30
+                        + static_cast<uint16_t>(px[1]) * 59
+                        + static_cast<uint16_t>(px[2]) * 11) / 100
+                );
+                return alphaBlendWithWhite(gray, px[3]);
+            }
+            default:
+                return 255;
+        }
+    }
+
+    bool parsePng(const uint8_t *data, size_t size, PngDecodeInfo &png) {
+        static const uint8_t signature[8] = {
+            0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'
+        };
+
+        if (!data || size < 33 || memcmp(data, signature, sizeof(signature)) != 0) {
+            return false;
+        }
+
+        size_t pos = 8;
+
+        try {
+            while (pos + 12 <= size) {
+                const uint32_t length = readBe32(data + pos);
+                const uint8_t *type = data + pos + 4;
+                const uint8_t *chunkData = data + pos + 8;
+
+                if (length > size - pos - 12) {
+                    return false;
+                }
+
+                if (pngChunkTypeEquals(type, "IHDR")) {
+                    if (length != 13) {
+                        return false;
+                    }
+
+                    png.width = readBe32(chunkData);
+                    png.height = readBe32(chunkData + 4);
+                    png.bitDepth = chunkData[8];
+                    png.colorType = chunkData[9];
+                    png.interlace = chunkData[12];
+                } else if (pngChunkTypeEquals(type, "PLTE")) {
+                    png.palette = chunkData;
+                    png.paletteSize = length;
+                } else if (pngChunkTypeEquals(type, "tRNS")) {
+                    png.transparency = chunkData;
+                    png.transparencySize = length;
+                } else if (pngChunkTypeEquals(type, "IDAT")) {
+                    png.idat.insert(png.idat.end(), chunkData, chunkData + length);
+                } else if (pngChunkTypeEquals(type, "IEND")) {
+                    break;
+                }
+
+                pos += static_cast<size_t>(length) + 12;
+            }
+        } catch (...) {
+            return false;
+        }
+
+        return png.width > 0
+            && png.height > 0
+            && png.bitDepth == 8
+            && png.interlace == 0
+            && pngBytesPerPixel(png.colorType) > 0
+            && !png.idat.empty();
+    }
+
+    struct PngRenderContext {
+        const PngDecodeInfo *png = nullptr;
+        JpegDrawContext *draw = nullptr;
+        uint8_t *scanline = nullptr;
+        uint8_t *currentRow = nullptr;
+        uint8_t *prevRow = nullptr;
+        size_t scanlineBytes = 0;
+        size_t rowBytes = 0;
+        size_t scanlineOffset = 0;
+        uint32_t sourceY = 0;
+        int bpp = 0;
+        bool ok = true;
+    };
+
+    bool renderPngScanline(PngRenderContext *ctx) {
+        if (!ctx || !ctx->png || !ctx->draw
+            || !ctx->scanline || !ctx->currentRow || !ctx->prevRow) {
+            return false;
+        }
+
+        if (ctx->sourceY >= ctx->png->height) {
+            return false;
+        }
+
+        memcpy(ctx->currentRow, ctx->scanline + 1, ctx->rowBytes);
+        if (!unfilterPngRow(
+                ctx->scanline[0],
+                ctx->currentRow,
+                ctx->prevRow,
+                ctx->rowBytes,
+                ctx->bpp
+            )) {
+            return false;
+        }
+
+        const int targetW = ctx->draw->destWidth;
+        const int targetH = ctx->draw->destHeight;
+        const int localY0 =
+            (static_cast<int>(ctx->sourceY) * targetH)
+                / static_cast<int>(ctx->png->height);
+        int localY1 =
+            (static_cast<int>(ctx->sourceY + 1) * targetH)
+                / static_cast<int>(ctx->png->height);
+        if (localY1 <= localY0) {
+            localY1 = localY0 + 1;
+        }
+
+        for (uint32_t sourceX = 0; sourceX < ctx->png->width; sourceX++) {
+            const uint8_t gray = pngPixelGray(*ctx->png, ctx->currentRow, sourceX);
+            const int localX0 =
+                (static_cast<int>(sourceX) * targetW)
+                    / static_cast<int>(ctx->png->width);
+            int localX1 =
+                (static_cast<int>(sourceX + 1) * targetW)
+                    / static_cast<int>(ctx->png->width);
+            if (localX1 <= localX0) {
+                localX1 = localX0 + 1;
+            }
+
+            if (ctx->draw->collectGrayscale) {
+                for (int yy = localY0; yy < localY1 && yy < targetH; yy++) {
+                    for (int xx = localX0; xx < localX1 && xx < targetW; xx++) {
+                        storeGraySample(ctx->draw, xx, yy, gray);
+                    }
+                }
+            } else {
+                for (int yy = localY0; yy < localY1 && yy < targetH; yy++) {
+                    for (int xx = localX0; xx < localX1 && xx < targetW; xx++) {
+                        const int drawX = ctx->draw->drawX + xx;
+                        const int drawY = ctx->draw->drawY + yy;
+                        const uint8_t level = orderedFourGrayLevel(gray, drawX, drawY);
+                        drawFourGrayPixel(*ctx->draw->display, drawX, drawY, level);
+                    }
+                }
+            }
+        }
+
+        uint8_t *tmp = ctx->prevRow;
+        ctx->prevRow = ctx->currentRow;
+        ctx->currentRow = tmp;
+        ctx->sourceY++;
+        ctx->scanlineOffset = 0;
+
+        return true;
+    }
+
+    int pngInflateCallback(const void *buffer, int len, void *user) {
+        PngRenderContext *ctx = static_cast<PngRenderContext *>(user);
+        const uint8_t *input = static_cast<const uint8_t *>(buffer);
+
+        if (!ctx || !input || len < 0 || !ctx->ok) {
+            return 0;
+        }
+
+        int remaining = len;
+        while (remaining > 0) {
+            const size_t needed = ctx->scanlineBytes - ctx->scanlineOffset;
+            const size_t toCopy =
+                static_cast<size_t>(remaining) < needed
+                    ? static_cast<size_t>(remaining)
+                    : needed;
+
+            memcpy(ctx->scanline + ctx->scanlineOffset, input, toCopy);
+            ctx->scanlineOffset += toCopy;
+            input += toCopy;
+            remaining -= static_cast<int>(toCopy);
+
+            if (ctx->scanlineOffset == ctx->scanlineBytes) {
+                if (!renderPngScanline(ctx)) {
+                    ctx->ok = false;
+                    return 0;
+                }
+            }
+        }
+
+        return 1;
     }
 
     uint32_t jpegInput(esp_rom_tjpgd_dec_t *dec, uint8_t *buffer, uint32_t ndata) {
@@ -492,6 +841,11 @@ void DisplayDriver::begin() {
     m_display.setTextWrap(false);
     m_displayBw.setRotation(1);
     m_displayBw.setTextWrap(false);
+
+    Serial.print("DISPLAY: bw buffer pages = ");
+    Serial.println(m_displayBw.pages());
+    Serial.print("DISPLAY: bw page height = ");
+    Serial.println(m_displayBw.pageHeight());
 
     Serial.println("DISPLAY: initialized");
 }
@@ -913,6 +1267,8 @@ void DisplayDriver::showHtmlPageBw(
     int page,
     int totalPages
 ) {
+    const unsigned long startedAt = millis();
+
     powerOn();
     m_displayBw.setTextWrap(false);
 
@@ -961,6 +1317,9 @@ void DisplayDriver::showHtmlPageBw(
     const int footerLineY = screenH - 30;
     const int footerTextY = screenH - 7;
 
+    int displayPass = 0;
+    bool hasMorePages = false;
+
     do {
         m_displayBw.fillScreen(GxEPD_WHITE);
         m_displayBw.setTextColor(GxEPD_BLACK);
@@ -1004,7 +1363,21 @@ void DisplayDriver::showHtmlPageBw(
         m_displayBw.print(page);
         m_displayBw.print(" / ");
         m_displayBw.print(totalPages);
-    } while (m_displayBw.nextPage());
+
+        const unsigned long nextPageStartedAt = millis();
+        Serial.print("DISPLAY: html bw nextPage start pass=");
+        Serial.println(displayPass);
+        hasMorePages = m_displayBw.nextPage();
+        Serial.print("DISPLAY: html bw nextPage ms pass=");
+        Serial.print(displayPass);
+        Serial.print(" = ");
+        Serial.println(millis() - nextPageStartedAt);
+        displayPass++;
+    } while (hasMorePages);
+
+    const unsigned long refreshedAt = millis();
+    Serial.print("DISPLAY: html bw draw+refresh ms = ");
+    Serial.println(refreshedAt - startedAt);
 
     m_forceNextPageFullRefresh = false;
     m_displayBw.powerOff();
@@ -1235,14 +1608,40 @@ void DisplayDriver::renderHtmlImage(
             imageWidth,
             imageHeight
         );
-    } else if (!cached->localFilePath.isEmpty()) {
-        rendered = drawJpegFile(
-            cached->localFilePath,
+    } else if (cached->data && cached->size >= 8
+        && cached->data[0] == 0x89
+        && cached->data[1] == 'P'
+        && cached->data[2] == 'N'
+        && cached->data[3] == 'G') {
+        rendered = drawPngData(
+            cached->data,
+            cached->size,
             imageX,
             y,
             imageWidth,
             imageHeight
         );
+    } else if (!cached->localFilePath.isEmpty()) {
+        String lowerPath = cached->localFilePath;
+        lowerPath.toLowerCase();
+
+        if (lowerPath.endsWith(".png")) {
+            rendered = drawPngFile(
+                cached->localFilePath,
+                imageX,
+                y,
+                imageWidth,
+                imageHeight
+            );
+        } else {
+            rendered = drawJpegFile(
+                cached->localFilePath,
+                imageX,
+                y,
+                imageWidth,
+                imageHeight
+            );
+        }
     }
 
     if (!rendered) {
@@ -1318,6 +1717,180 @@ bool DisplayDriver::drawJpegFile(
     const bool ok = drawJpegContext(ctx, x, y, maxWidth, maxHeight);
     file.close();
 
+    return ok;
+}
+
+bool DisplayDriver::drawPngData(
+    const uint8_t *data,
+    size_t size,
+    int x,
+    int y,
+    int maxWidth,
+    int maxHeight
+) {
+    if (!data || size == 0 || maxWidth <= 0 || maxHeight <= 0) {
+        return false;
+    }
+
+    PngDecodeInfo png;
+    if (!parsePng(data, size, png)) {
+        Serial.println("DISPLAY: png parse failed or unsupported format");
+        return false;
+    }
+
+    const int bpp = pngBytesPerPixel(png.colorType);
+    const size_t rowBytes = static_cast<size_t>(png.width) * bpp;
+    const size_t scanlineBytes = rowBytes + 1;
+
+    if (rowBytes == 0 || scanlineBytes > 8192) {
+        Serial.println("DISPLAY: png row too large");
+        return false;
+    }
+
+    const float fitScale = min(
+        static_cast<float>(maxWidth) / static_cast<float>(png.width),
+        static_cast<float>(maxHeight) / static_cast<float>(png.height)
+    );
+    const float targetScale = min(fitScale, Constants::DISPLAY_IMAGE_MAX_UPSCALE);
+
+    int targetW = static_cast<int>(png.width * targetScale);
+    int targetH = static_cast<int>(png.height * targetScale);
+
+    if (targetW < 1) targetW = 1;
+    if (targetH < 1) targetH = 1;
+    if (targetW > maxWidth) targetW = maxWidth;
+    if (targetH > maxHeight) targetH = maxHeight;
+
+    JpegDrawContext ctx;
+    ctx.display = &m_display;
+    ctx.decodedWidth = static_cast<int>(png.width);
+    ctx.decodedHeight = static_cast<int>(png.height);
+    ctx.destWidth = targetW;
+    ctx.destHeight = targetH;
+    ctx.drawX = x + (maxWidth - targetW) / 2;
+    ctx.drawY = y + (maxHeight - targetH) / 2;
+
+    const size_t pixelCount = static_cast<size_t>(targetW) * targetH;
+    ctx.grayBuffer = allocateImageBuffer(pixelCount);
+
+    if (ctx.grayBuffer) {
+        memset(ctx.grayBuffer, 0xFF, pixelCount);
+        ctx.collectGrayscale = true;
+    } else {
+        ctx.collectGrayscale = false;
+        Serial.println("DISPLAY: png grayscale buffer allocation failed, using direct ordered dither");
+    }
+
+    uint8_t *scanline = static_cast<uint8_t *>(malloc(scanlineBytes));
+    uint8_t *currentRow = static_cast<uint8_t *>(malloc(rowBytes));
+    uint8_t *prevRow = static_cast<uint8_t *>(calloc(rowBytes, 1));
+
+    if (!scanline || !currentRow || !prevRow) {
+        free(scanline);
+        free(currentRow);
+        free(prevRow);
+        free(ctx.grayBuffer);
+        Serial.println("DISPLAY: png row buffer allocation failed");
+        return false;
+    }
+
+    Serial.print("DISPLAY: png ");
+    Serial.print(static_cast<unsigned long>(png.width));
+    Serial.print("x");
+    Serial.print(static_cast<unsigned long>(png.height));
+    Serial.print(" -> ");
+    Serial.print(targetW);
+    Serial.print("x");
+    Serial.print(targetH);
+    Serial.print(" color=");
+    Serial.print(static_cast<int>(png.colorType));
+    Serial.print(" dither=");
+    Serial.println(ctx.collectGrayscale ? "floyd-steinberg" : "ordered-direct");
+
+    PngRenderContext renderContext;
+    renderContext.png = &png;
+    renderContext.draw = &ctx;
+    renderContext.scanline = scanline;
+    renderContext.currentRow = currentRow;
+    renderContext.prevRow = prevRow;
+    renderContext.scanlineBytes = scanlineBytes;
+    renderContext.rowBytes = rowBytes;
+    renderContext.bpp = bpp;
+
+    size_t inputSize = png.idat.size();
+    const int inflateOk = tinfl_decompress_mem_to_callback(
+        png.idat.data(),
+        &inputSize,
+        pngInflateCallback,
+        &renderContext,
+        TINFL_FLAG_PARSE_ZLIB_HEADER
+    );
+
+    const bool ok = inflateOk == 1
+        && renderContext.ok
+        && renderContext.sourceY == png.height
+        && renderContext.scanlineOffset == 0;
+
+    if (ok && ctx.collectGrayscale) {
+        drawErrorDiffusedGrayscaleImage(
+            m_display,
+            ctx.grayBuffer,
+            ctx.drawX,
+            ctx.drawY,
+            ctx.destWidth,
+            ctx.destHeight
+        );
+    }
+
+    free(scanline);
+    free(currentRow);
+    free(prevRow);
+    free(ctx.grayBuffer);
+
+    if (!ok) {
+        Serial.println("DISPLAY: png decode failed");
+    }
+
+    return ok;
+}
+
+bool DisplayDriver::drawPngFile(
+    const String &path,
+    int x,
+    int y,
+    int maxWidth,
+    int maxHeight
+) {
+    if (path.isEmpty() || maxWidth <= 0 || maxHeight <= 0) {
+        return false;
+    }
+
+    File file = SD.open(path, "r");
+    if (!file || file.isDirectory()) {
+        Serial.print("DISPLAY: png file open failed: ");
+        Serial.println(path);
+        return false;
+    }
+
+    const size_t size = file.size();
+    uint8_t *data = allocateImageBuffer(size);
+    if (!data) {
+        file.close();
+        Serial.println("DISPLAY: png file buffer allocation failed");
+        return false;
+    }
+
+    const size_t bytesRead = file.read(data, size);
+    file.close();
+
+    if (bytesRead != size) {
+        free(data);
+        Serial.println("DISPLAY: png file read failed");
+        return false;
+    }
+
+    const bool ok = drawPngData(data, size, x, y, maxWidth, maxHeight);
+    free(data);
     return ok;
 }
 

@@ -4,6 +4,8 @@
 #include <ArduinoJson.h>
 #include <vector>
 
+#include "../utils/DebugLog.h"
+
 namespace {
     bool removeFileIfExists(fs::FS &fs, const String &path) {
         if (path.isEmpty()) {

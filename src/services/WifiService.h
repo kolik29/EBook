@@ -42,6 +42,9 @@ private:
 
     bool m_enabled = false;
     bool m_apStarted = false;
+    bool m_otaStarted = false;
+    bool m_otaInProgress = false;
+    int m_otaLastProgressPercent = -1;
 
     int m_staAttempts = 0;
     unsigned long m_attemptStartedAt = 0;
@@ -53,6 +56,9 @@ private:
     WebServerService m_webServer;
     LedService &m_ledService;
 
+    void startOta();
+    void stopOta();
+    void handleOta();
     void startAccessPoint();
     void startStaAttempt();
     void handleConnecting();

@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WebServer.h>
+#include <WiFiClient.h>
+#include <uri/UriGlob.h>
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <new>
@@ -13,6 +15,7 @@
 
 #include "../config/Constants.h"
 #include "../models/EpubModels.h"
+#include "../utils/DebugLog.h"
 
 static WebServer server(80);
 
@@ -48,6 +51,51 @@ static String stripExtension(const String &fileName) {
     }
 
     return fileName.substring(0, dot);
+}
+
+static String xmlEscape(String value) {
+    value.replace("&", "&amp;");
+    value.replace("<", "&lt;");
+    value.replace(">", "&gt;");
+    value.replace("\"", "&quot;");
+    value.replace("'", "&apos;");
+    return value;
+}
+
+static void sendGeneratedBookCover(const BookItem &book) {
+    String title = book.title;
+    String author = book.author;
+
+    title.trim();
+    author.trim();
+
+    if (title.isEmpty()) {
+        title = "Untitled";
+    }
+
+    if (author.isEmpty()) {
+        author = "Unknown author";
+    }
+
+    String svg;
+    svg.reserve(900 + title.length() + author.length());
+    svg += F("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"320\" height=\"480\" viewBox=\"0 0 320 480\">");
+    svg += F("<rect width=\"320\" height=\"480\" fill=\"#f4f1ea\"/>");
+    svg += F("<rect x=\"20\" y=\"20\" width=\"280\" height=\"440\" rx=\"10\" fill=\"#fffaf0\" stroke=\"#28231d\" stroke-width=\"4\"/>");
+    svg += F("<rect x=\"42\" y=\"44\" width=\"236\" height=\"392\" rx=\"4\" fill=\"#ffffff\" stroke=\"#b6a98f\" stroke-width=\"1\"/>");
+    svg += F("<text x=\"160\" y=\"178\" text-anchor=\"middle\" font-family=\"Georgia,serif\" font-size=\"28\" font-weight=\"700\" fill=\"#211d18\">");
+    svg += xmlEscape(title);
+    svg += F("</text>");
+    svg += F("<line x1=\"82\" y1=\"240\" x2=\"238\" y2=\"240\" stroke=\"#8f8066\" stroke-width=\"2\"/>");
+    svg += F("<text x=\"160\" y=\"294\" text-anchor=\"middle\" font-family=\"Arial,sans-serif\" font-size=\"18\" fill=\"#4f4638\">");
+    svg += xmlEscape(author);
+    svg += F("</text>");
+    svg += F("</svg>");
+
+    server.send(200, "image/svg+xml; charset=utf-8", svg);
+
+    Serial.print("WEB: generated cover placeholder, id=");
+    Serial.println(book.id);
 }
 
 static void listLittleFsRoot() {
@@ -88,6 +136,32 @@ static String getContentType(const String &path) {
     return "application/octet-stream";
 }
 
+static void sendOpenFile(File &file, const String &contentType) {
+    WiFiClient client = server.client();
+
+    String header;
+    header.reserve(contentType.length() + 96);
+    header += "HTTP/1.1 200 OK\r\n";
+    header += "Content-Type: ";
+    header += contentType;
+    header += "\r\nContent-Length: ";
+    header += String(file.size());
+    header += "\r\nConnection: close\r\n\r\n";
+
+    client.write(reinterpret_cast<const uint8_t *>(header.c_str()), header.length());
+
+    uint8_t buffer[1024];
+    while (file.available()) {
+        const size_t bytesRead = file.read(buffer, sizeof(buffer));
+        if (bytesRead == 0) {
+            break;
+        }
+
+        client.write(buffer, bytesRead);
+        yield();
+    }
+}
+
 static bool serveFile(const String &requestPath) {
     String path = requestPath;
 
@@ -107,10 +181,39 @@ static bool serveFile(const String &requestPath) {
     }
 
     const String contentType = getContentType(path);
-    server.streamFile(file, contentType);
+    sendOpenFile(file, contentType);
     file.close();
 
     Serial.print("WEB: served ");
+    Serial.println(path);
+
+    return true;
+}
+
+static bool serveSdPath(const String &path) {
+    if (path.isEmpty() || !SD.exists(path)) {
+        return false;
+    }
+
+    File file = SD.open(path, "r");
+    if (!file || file.isDirectory()) {
+        Serial.print("WEB: failed to open SD file: ");
+        Serial.println(path);
+        return false;
+    }
+
+    if (file.size() == 0) {
+        file.close();
+        Serial.print("WEB: SD file is empty: ");
+        Serial.println(path);
+        return false;
+    }
+
+    const String contentType = getContentType(path);
+    sendOpenFile(file, contentType);
+    file.close();
+
+    Serial.print("WEB: served SD file ");
     Serial.println(path);
 
     return true;
@@ -121,25 +224,7 @@ static bool serveSdFile(const String &requestPath) {
         return false;
     }
 
-    if (!SD.exists(requestPath)) {
-        return false;
-    }
-
-    File file = SD.open(requestPath, "r");
-    if (!file || file.isDirectory()) {
-        Serial.print("WEB: failed to open SD file: ");
-        Serial.println(requestPath);
-        return false;
-    }
-
-    const String contentType = getContentType(requestPath);
-    server.streamFile(file, contentType);
-    file.close();
-
-    Serial.print("WEB: served SD file ");
-    Serial.println(requestPath);
-
-    return true;
+    return serveSdPath(requestPath);
 }
 
 static bool isDigitsOnly(const String &value) {
@@ -186,6 +271,23 @@ static bool extractBookPaginationId(const String &uri, int &bookId) {
     return true;
 }
 
+static bool extractBookCoverId(const String &uri, int &bookId) {
+    const String suffix = "/cover";
+
+    if (!uri.startsWith("/books/") || !uri.endsWith(suffix)) {
+        return false;
+    }
+
+    String middle = uri.substring(String("/books/").length(), uri.length() - suffix.length());
+
+    if (!isDigitsOnly(middle)) {
+        return false;
+    }
+
+    bookId = middle.toInt();
+    return true;
+}
+
 static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage) {
     currentPage = 0;
 
@@ -213,48 +315,6 @@ static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage
     return false;
 }
 
-static bool ensureBookCover(LibraryService *libraryService, BookItem &item) {
-    if (!libraryService) {
-        return false;
-    }
-
-    if (!item.cover.isEmpty() && SD.exists(item.cover)) {
-        return false;
-    }
-
-    const String epubPath =
-        libraryService->getItemsPath() + "/" + item.folder + "/original.epub";
-
-    if (!SD.exists(epubPath)) {
-        return false;
-    }
-
-    EpubParserService epubParser(SD);
-    EpubMetadata metadata;
-
-    if (!epubParser.readMetadata(epubPath, metadata) || !metadata.hasCover) {
-        return false;
-    }
-
-    String coverPath = "";
-    const String coverBasePath = libraryService->getCoverPath() + "/" + item.folder;
-
-    if (!epubParser.extractCoverToFile(epubPath, metadata, coverBasePath, coverPath)) {
-        Serial.print("WEB: failed to repair cover for ");
-        Serial.println(item.folder);
-        return false;
-    }
-
-    item.cover = coverPath;
-
-    Serial.print("WEB: repaired cover for ");
-    Serial.print(item.folder);
-    Serial.print(": ");
-    Serial.println(item.cover);
-
-    return true;
-}
-
 static void sendBooksFromLibrary(LibraryService *libraryService) {
     if (!libraryService) {
         server.send(500, "application/json; charset=utf-8",
@@ -269,16 +329,6 @@ static void sendBooksFromLibrary(LibraryService *libraryService) {
         return;
     }
 
-    bool libraryChanged = false;
-
-    for (BookItem &item : library.books) {
-        libraryChanged = ensureBookCover(libraryService, item) || libraryChanged;
-    }
-
-    if (libraryChanged && !libraryService->saveLibrary(library)) {
-        Serial.println("WEB: failed to save repaired cover paths");
-    }
-
     JsonDocument doc;
     JsonArray books = doc.to<JsonArray>();
 
@@ -288,7 +338,7 @@ static void sendBooksFromLibrary(LibraryService *libraryService) {
         bookObj["folder"] = item.folder;
         bookObj["title"] = item.title;
         bookObj["author"] = item.author;
-        bookObj["img"] = item.cover;
+        bookObj["img"] = String("/books/") + String(item.id) + "/cover?v=" + item.folder;
         bookObj["active"] = (item.folder == library.activeBookFolder);
 
         JsonObject pageObj = bookObj["page"].to<JsonObject>();
@@ -331,6 +381,38 @@ static void sendBookPaginationFromLibrary(LibraryService *libraryService, int bo
     }
 
     server.send(404, "application/json; charset=utf-8", R"({"ok":false,"message":"book not found"})");
+}
+
+static void sendBookCoverFromLibrary(LibraryService *libraryService, int bookId) {
+    if (!libraryService) {
+        server.send(500, "text/plain", "library service not set");
+        return;
+    }
+
+    LibraryData library;
+    if (!libraryService->loadLibrary(library)) {
+        server.send(500, "text/plain", "failed to load library");
+        return;
+    }
+
+    BookItem *book = nullptr;
+    for (BookItem &item : library.books) {
+        if (static_cast<int>(item.id) == bookId) {
+            book = &item;
+            break;
+        }
+    }
+
+    if (!book) {
+        server.send(404, "text/plain", "book not found");
+        return;
+    }
+
+    if (!book->cover.isEmpty() && serveSdPath(book->cover)) {
+        return;
+    }
+
+    sendGeneratedBookCover(*book);
 }
 
 static void closeUploadFileIfOpen() {
@@ -447,7 +529,7 @@ bool WebServerService::begin(
                 return;
             }
 
-            server.streamFile(file, "text/html; charset=utf-8");
+            sendOpenFile(file, "text/html; charset=utf-8");
             file.close();
 
             Serial.println("WEB: served /index.html");
@@ -777,18 +859,13 @@ bool WebServerService::begin(
         }
     );
 
-    server.onNotFound([this]() {
+    auto handleFallbackRequest = [this]() {
         if (m_onActivity) {
             m_onActivity();
         }
 
         const String uri = server.uri();
         const HTTPMethod method = server.method();
-
-        Serial.print("WEB: onNotFound uri=");
-        Serial.print(uri);
-        Serial.print(" method=");
-        Serial.println((int)method);
 
         if (method == HTTP_DELETE) {
             int bookId = 0;
@@ -870,6 +947,14 @@ bool WebServerService::begin(
 
         if (method == HTTP_GET) {
             int bookId = 0;
+            if (extractBookCoverId(uri, bookId)) {
+                Serial.print("WEB: get cover requested, id=");
+                Serial.println(bookId);
+
+                sendBookCoverFromLibrary(m_libraryService, bookId);
+                return;
+            }
+
             if (extractBookPaginationId(uri, bookId)) {
                 Serial.print("WEB: get pagination requested, id=");
                 Serial.println(bookId);
@@ -901,7 +986,7 @@ bool WebServerService::begin(
                 server.send(500, "text/plain", "Failed to open index.html");
                 return;
             }
-            server.streamFile(file, "text/html; charset=utf-8");
+            sendOpenFile(file, "text/html; charset=utf-8");
             file.close();
 
             Serial.print("WEB: fallback -> /index.html for ");
@@ -910,7 +995,10 @@ bool WebServerService::begin(
         }
 
         server.send(404, "text/plain", "Not found");
-    });
+    };
+
+    server.on(UriGlob("*"), HTTP_ANY, handleFallbackRequest);
+    server.onNotFound(handleFallbackRequest);
 
     server.begin();
     m_running = true;

@@ -7,6 +7,10 @@ namespace WifiConfig {
     constexpr const char *HOME_SSID = "";
     constexpr const char *HOME_PASSWORD = "";
 
+    constexpr const char *OTA_HOSTNAME = "ebook-ota";
+    constexpr const char *OTA_PASSWORD = "";
+    constexpr unsigned int OTA_PORT = 3232;
+
     constexpr unsigned long STA_CONNECT_TIMEOUT_MS = 10000;
     constexpr int MAX_STA_ATTEMPTS = 3;
 }

@@ -23,9 +23,25 @@ public:
         int &outPageCount
     ) const;
     bool paginatePage(
+        const String &html,
+        const String &baseFilePath,
+        int pageIndex,
+        int knownPageCount,
+        HtmlRenderPage &outPage,
+        int &outPageCount
+    ) const;
+    bool paginatePage(
         const std::string &html,
         const String &baseFilePath,
         int pageIndex,
+        HtmlRenderPage &outPage,
+        int &outPageCount
+    ) const;
+    bool paginatePage(
+        const std::string &html,
+        const String &baseFilePath,
+        int pageIndex,
+        int knownPageCount,
         HtmlRenderPage &outPage,
         int &outPageCount
     ) const;
@@ -55,7 +71,11 @@ private:
         std::vector<HtmlRenderPage> *pages = nullptr;
         HtmlRenderPage *targetPage = nullptr;
         int targetPageIndex = -1;
+        int knownPageCount = 0;
         int pageCount = 0;
+        bool stopAfterTargetPage = false;
+        bool targetPageFound = false;
+        bool stop = false;
     };
 
     int m_pageWidthPx;
@@ -65,6 +85,14 @@ private:
         const BookHtmlView &html,
         const String &baseFilePath,
         PageCollector &collector
+    ) const;
+    bool paginatePageFromView(
+        const BookHtmlView &html,
+        const String &baseFilePath,
+        int pageIndex,
+        int knownPageCount,
+        HtmlRenderPage &outPage,
+        int &outPageCount
     ) const;
 
     void collectCssRules(const BookHtmlView &html, std::vector<CssRule> &rules) const;

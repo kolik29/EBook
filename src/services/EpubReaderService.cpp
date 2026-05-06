@@ -1,5 +1,6 @@
 #include "EpubReaderService.h"
 #include "../config/Constants.h"
+#include "../utils/DebugLog.h"
 
 #include <new>
 #include <utility>
@@ -89,6 +90,7 @@ bool EpubReaderService::openBook(const String &epubPath) {
     m_readerStatePath = getReaderStatePathForEpub(epubPath);
     m_currentSpineIndex = 0;
     m_currentPageIndex = 0;
+    m_lastNavigationDirection = 0;
     clearCurrentSpineCache();
     clearCurrentRenderedPages();
     m_opened = false;
@@ -221,6 +223,8 @@ bool EpubReaderService::goToGlobalPage(int globalPage) {
         return false;
     }
 
+    m_lastNavigationDirection = 0;
+
     if (!loadCurrentSpineItem(m_currentPageIndex)) {
         return false;
     }
@@ -275,33 +279,24 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
         m_currentPageIndex = 0;
     }
 
-    HtmlRenderPage currentPage;
     int actualPageCount = 0;
+    const unsigned long prepareStartedAt = millis();
 
-    try {
-        m_paginator.paginatePage(
-            m_currentSpineHtml,
-            m_structure.spine[m_currentSpineIndex].path,
-            m_currentPageIndex,
-            currentPage,
-            actualPageCount
-        );
-    } catch (const std::bad_alloc &) {
-        String message = "Not enough memory to paginate EPUB section ";
-        message += spineDescription;
-        message += ".";
-        failWithMessage("Read error", message);
-        return false;
-    } catch (...) {
-        String message = "HTML paginator failed on EPUB section ";
-        message += spineDescription;
-        message += ".";
-        failWithMessage("Read error", message);
+    if (!loadRenderedPage(m_currentPageIndex, m_currentRenderedPage, actualPageCount)) {
+        if (m_lastError.isEmpty()) {
+            String message = "HTML paginator failed on EPUB section ";
+            message += spineDescription;
+            message += ".";
+            failWithMessage("Read error", message);
+        }
+
         return false;
     }
 
-    clearCurrentRenderedPages();
-    m_currentPages.push_back(std::move(currentPage));
+    m_currentRenderedPageReady = true;
+
+    Serial.print("READER: page prepare ms = ");
+    Serial.println(millis() - prepareStartedAt);
 
     if (m_currentSpineIndex >= 0
         && m_currentSpineIndex < static_cast<int>(m_spinePageCounts.size())
@@ -324,6 +319,65 @@ bool EpubReaderService::loadCurrentSpineItem(int preferredPageIndex) {
 
     renderCurrentPage();
 
+    return true;
+}
+
+bool EpubReaderService::loadRenderedPage(
+    int pageIndex,
+    HtmlRenderPage &outPage,
+    int &actualPageCount
+) {
+    outPage = HtmlRenderPage();
+    actualPageCount = getCurrentSpinePageCount();
+    clearCurrentRenderBuffer();
+
+    if (findRenderedPageInCache(m_currentSpineIndex, pageIndex, outPage)) {
+        Serial.print("READER: rendered page cache hit: ");
+        Serial.println(pageIndex);
+
+        String message = "rendered page cache hit: pageIndex=";
+        message += String(pageIndex);
+        logBookLaunchAction(message);
+        return true;
+    }
+
+    HtmlRenderPage renderedPage;
+
+    try {
+        const bool ok = m_paginator.paginatePage(
+            m_currentSpineHtml,
+            m_structure.spine[m_currentSpineIndex].path,
+            pageIndex,
+            actualPageCount,
+            renderedPage,
+            actualPageCount
+        );
+
+        if (!ok) {
+            String message = "HTML paginator could not render page ";
+            message += String(pageIndex + 1);
+            message += " in EPUB section ";
+            message += describeCurrentSpineItem();
+            message += ".";
+            failWithMessage("Read error", message);
+            return false;
+        }
+    } catch (const std::bad_alloc &) {
+        String message = "Not enough memory to paginate EPUB section ";
+        message += describeCurrentSpineItem();
+        message += ".";
+        failWithMessage("Read error", message);
+        return false;
+    } catch (...) {
+        String message = "HTML paginator failed on EPUB section ";
+        message += describeCurrentSpineItem();
+        message += ".";
+        failWithMessage("Read error", message);
+        return false;
+    }
+
+    cacheRenderedPage(m_currentSpineIndex, pageIndex, renderedPage);
+    outPage = std::move(renderedPage);
     return true;
 }
 
@@ -376,8 +430,18 @@ void EpubReaderService::clearCurrentSpineCache() {
     m_cachedSpineIndex = -1;
 }
 
+void EpubReaderService::releaseMemoryForWifi() {
+    if (!m_opened) {
+        return;
+    }
+
+    clearCurrentSpineCache();
+    clearCurrentRenderedPages();
+    Serial.println("READER: released cached page data for WiFi");
+}
+
 void EpubReaderService::showCurrentPage() {
-    if (m_opened && m_currentPages.empty()) {
+    if (m_opened && !m_currentRenderedPageReady) {
         loadCurrentSpineItem(m_currentPageIndex);
         return;
     }
@@ -386,7 +450,7 @@ void EpubReaderService::showCurrentPage() {
 }
 
 void EpubReaderService::renderCurrentPage() {
-    if (!m_opened || m_currentPages.empty()) {
+    if (!m_opened || !m_currentRenderedPageReady) {
         return;
     }
 
@@ -424,6 +488,13 @@ void EpubReaderService::renderCurrentPage() {
         outSize = 0;
         outFilePath = "";
 
+        const String cachePath = imageCachePathForEpub(m_epubPath, path);
+
+        if (m_fs.exists(cachePath)) {
+            outFilePath = cachePath;
+            return true;
+        }
+
         if (m_parser.extractResourceData(
             m_epubPath,
             path,
@@ -434,7 +505,6 @@ void EpubReaderService::renderCurrentPage() {
             return true;
         }
 
-        const String cachePath = imageCachePathForEpub(m_epubPath, path);
         if (m_parser.extractResourceToFile(
             m_epubPath,
             path,
@@ -456,18 +526,138 @@ void EpubReaderService::renderCurrentPage() {
 
     m_display.showHtmlPage(
         title,
-        m_currentPages[0],
+        m_currentRenderedPage,
         globalPage,
         m_totalPageCount,
         imageLoader
     );
 
-    clearCurrentRenderedPages();
+    clearCurrentRenderBuffer();
+    prefetchAdjacentPages();
 }
 
 void EpubReaderService::clearCurrentRenderedPages() {
-    std::vector<HtmlRenderPage> emptyPages;
-    std::swap(m_currentPages, emptyPages);
+    clearCurrentRenderBuffer();
+
+    std::vector<RenderedPageCacheEntry> emptyCache;
+    std::swap(m_renderedPageCache, emptyCache);
+}
+
+void EpubReaderService::clearCurrentRenderBuffer() {
+    HtmlRenderPage emptyPage;
+    std::swap(m_currentRenderedPage, emptyPage);
+    m_currentRenderedPageReady = false;
+}
+
+bool EpubReaderService::findRenderedPageInCache(
+    int spineIndex,
+    int pageIndex,
+    HtmlRenderPage &outPage
+) const {
+    for (const RenderedPageCacheEntry &entry : m_renderedPageCache) {
+        if (entry.spineIndex == spineIndex && entry.pageIndex == pageIndex) {
+            outPage = entry.page;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void EpubReaderService::cacheRenderedPage(
+    int spineIndex,
+    int pageIndex,
+    const HtmlRenderPage &page
+) {
+    try {
+        for (RenderedPageCacheEntry &entry : m_renderedPageCache) {
+            if (entry.spineIndex == spineIndex && entry.pageIndex == pageIndex) {
+                entry.page = page;
+                pruneRenderedPageCache();
+                return;
+            }
+        }
+
+        RenderedPageCacheEntry entry;
+        entry.spineIndex = spineIndex;
+        entry.pageIndex = pageIndex;
+        entry.page = page;
+        m_renderedPageCache.push_back(std::move(entry));
+        pruneRenderedPageCache();
+    } catch (...) {
+        Serial.println("READER: rendered page cache cleared after allocation failure");
+        std::vector<RenderedPageCacheEntry> emptyCache;
+        std::swap(m_renderedPageCache, emptyCache);
+    }
+}
+
+void EpubReaderService::pruneRenderedPageCache() {
+    for (auto it = m_renderedPageCache.begin(); it != m_renderedPageCache.end(); ) {
+        int distance = it->pageIndex - m_currentPageIndex;
+        if (distance < 0) {
+            distance = -distance;
+        }
+
+        if (it->spineIndex != m_currentSpineIndex || distance > 1) {
+            it = m_renderedPageCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void EpubReaderService::prefetchAdjacentPages() {
+    if (!m_opened || m_currentSpineHtml.empty()) {
+        return;
+    }
+
+    const int pageCount = getCurrentSpinePageCount();
+    if (pageCount <= 1) {
+        return;
+    }
+
+    const int firstCandidate = m_lastNavigationDirection < 0
+        ? m_currentPageIndex - 1
+        : m_currentPageIndex + 1;
+    const int secondCandidate = m_lastNavigationDirection < 0
+        ? m_currentPageIndex + 1
+        : m_currentPageIndex - 1;
+    const int candidates[2] = { firstCandidate, secondCandidate };
+
+    for (int candidate : candidates) {
+        if (candidate < 0 || candidate >= pageCount) {
+            continue;
+        }
+
+        HtmlRenderPage cachedPage;
+        if (findRenderedPageInCache(m_currentSpineIndex, candidate, cachedPage)) {
+            continue;
+        }
+
+        HtmlRenderPage page;
+        int actualPageCount = pageCount;
+
+        try {
+            if (m_paginator.paginatePage(
+                m_currentSpineHtml,
+                m_structure.spine[m_currentSpineIndex].path,
+                candidate,
+                pageCount,
+                page,
+                actualPageCount
+            )) {
+                cacheRenderedPage(m_currentSpineIndex, candidate, page);
+
+                Serial.print("READER: prefetched rendered page: ");
+                Serial.println(candidate);
+            }
+        } catch (...) {
+            Serial.print("READER: prefetch skipped after paginator failure: ");
+            Serial.println(candidate);
+        }
+
+        break;
+    }
 }
 
 void EpubReaderService::nextPage() {
@@ -477,6 +667,8 @@ void EpubReaderService::nextPage() {
     }
 
     if (m_currentPageIndex + 1 < getCurrentSpinePageCount()) {
+        m_lastNavigationDirection = 1;
+
         if (!loadCurrentSpineItem(m_currentPageIndex + 1)) {
             return;
         }
@@ -490,6 +682,7 @@ void EpubReaderService::nextPage() {
 
     if (m_currentSpineIndex + 1 < static_cast<int>(m_structure.spine.size())) {
         m_currentSpineIndex++;
+        m_lastNavigationDirection = 1;
 
         if (loadCurrentSpineItem(0)) {
             saveReadingState();
@@ -512,6 +705,8 @@ void EpubReaderService::prevPage() {
     }
 
     if (m_currentPageIndex > 0) {
+        m_lastNavigationDirection = -1;
+
         if (!loadCurrentSpineItem(m_currentPageIndex - 1)) {
             return;
         }
@@ -525,6 +720,7 @@ void EpubReaderService::prevPage() {
 
     if (m_currentSpineIndex > 0) {
         m_currentSpineIndex--;
+        m_lastNavigationDirection = -1;
 
         if (loadCurrentSpineItem(-1)) {
             saveReadingState();

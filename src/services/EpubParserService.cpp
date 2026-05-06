@@ -8,6 +8,8 @@
 #include <string.h>
 #include <string>
 
+#include "../utils/DebugLog.h"
+
 namespace {
     constexpr uint32_t ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50UL;
     constexpr uint32_t ZIP_CENTRAL_DIR_SIGNATURE = 0x02014b50UL;
@@ -168,6 +170,216 @@ namespace {
                 return false;
             }
         }
+    }
+
+    bool inflateZipEntryToFile(
+        File &file,
+        File &outFile,
+        const String &entryName,
+        uint32_t compressedSize,
+        uint32_t uncompressedSize,
+        String &errorDetail
+    ) {
+        tinfl_decompressor decompressor;
+        tinfl_init(&decompressor);
+
+        uint8_t inputBuffer[ZIP_INFLATE_INPUT_CHUNK];
+        uint8_t *dictBuffer = static_cast<uint8_t *>(malloc(TINFL_LZ_DICT_SIZE));
+        if (!dictBuffer) {
+            errorDetail = entryName + " dictionary allocation failed";
+            return false;
+        }
+
+        size_t inputAvailable = 0;
+        size_t inputOffset = 0;
+        size_t dictOffset = 0;
+        uint32_t compressedRemaining = compressedSize;
+        uint32_t outputRemaining = uncompressedSize;
+        uint32_t totalOutput = 0;
+
+        while (true) {
+            if (inputOffset >= inputAvailable && compressedRemaining > 0) {
+                const size_t nextChunk = compressedRemaining > ZIP_INFLATE_INPUT_CHUNK
+                    ? ZIP_INFLATE_INPUT_CHUNK
+                    : compressedRemaining;
+                inputAvailable = file.read(inputBuffer, nextChunk);
+                inputOffset = 0;
+
+                if (inputAvailable == 0) {
+                    errorDetail = entryName + " read returned 0 during stream inflate";
+                    free(dictBuffer);
+                    return false;
+                }
+
+                compressedRemaining -= static_cast<uint32_t>(inputAvailable);
+            }
+
+            if (dictOffset >= TINFL_LZ_DICT_SIZE) {
+                dictOffset = 0;
+            }
+
+            size_t inputSize = inputAvailable - inputOffset;
+            size_t outputSize = TINFL_LZ_DICT_SIZE - dictOffset;
+            if (outputSize > outputRemaining) {
+                outputSize = outputRemaining;
+            }
+
+            mz_uint32 flags = 0;
+            if (compressedRemaining > 0) {
+                flags |= TINFL_FLAG_HAS_MORE_INPUT;
+            }
+
+            const tinfl_status status = tinfl_decompress(
+                &decompressor,
+                inputBuffer + inputOffset,
+                &inputSize,
+                dictBuffer,
+                dictBuffer + dictOffset,
+                &outputSize,
+                flags
+            );
+
+            inputOffset += inputSize;
+
+            if (outputSize > 0) {
+                const size_t written = outFile.write(dictBuffer + dictOffset, outputSize);
+                if (written != outputSize) {
+                    errorDetail = entryName + " output file write failed";
+                    free(dictBuffer);
+                    return false;
+                }
+
+                dictOffset += outputSize;
+                totalOutput += static_cast<uint32_t>(outputSize);
+                outputRemaining -= static_cast<uint32_t>(outputSize);
+            }
+
+            if (status == TINFL_STATUS_DONE) {
+                free(dictBuffer);
+
+                if (totalOutput != uncompressedSize) {
+                    errorDetail = entryName;
+                    errorDetail += " streamed output=";
+                    errorDetail += String(static_cast<unsigned long>(totalOutput));
+                    errorDetail += " expected=";
+                    errorDetail += String(static_cast<unsigned long>(uncompressedSize));
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (status < 0) {
+                errorDetail = entryName;
+                errorDetail += " stream status=";
+                errorDetail += String(static_cast<int>(status));
+                errorDetail += " output=";
+                errorDetail += String(static_cast<unsigned long>(totalOutput));
+                free(dictBuffer);
+                return false;
+            }
+
+            if (inputSize == 0 && outputSize == 0) {
+                errorDetail = entryName + " stream inflate made no progress";
+                free(dictBuffer);
+                return false;
+            }
+
+            if (status == TINFL_STATUS_NEEDS_MORE_INPUT
+                && compressedRemaining == 0
+                && inputOffset >= inputAvailable) {
+                errorDetail = entryName + " stream input exhausted";
+                free(dictBuffer);
+                return false;
+            }
+        }
+    }
+
+    int hexNibble(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    String percentDecodePath(const String &value) {
+        String decoded = "";
+        decoded.reserve(value.length());
+
+        for (int i = 0; i < value.length(); i++) {
+            if (value[i] == '%' && i + 2 < value.length()) {
+                const int hi = hexNibble(value[i + 1]);
+                const int lo = hexNibble(value[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    decoded += static_cast<char>((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            decoded += value[i];
+        }
+
+        return decoded;
+    }
+
+    String normalizeZipLookupPath(String path) {
+        path.replace("\\", "/");
+
+        const int hashPos = path.indexOf('#');
+        if (hashPos >= 0) {
+            path = path.substring(0, hashPos);
+        }
+
+        const int queryPos = path.indexOf('?');
+        if (queryPos >= 0) {
+            path = path.substring(0, queryPos);
+        }
+
+        while (path.startsWith("/")) {
+            path = path.substring(1);
+        }
+
+        path = percentDecodePath(path);
+
+        String result = "";
+        int start = 0;
+        const int len = path.length();
+
+        while (start <= len) {
+            int slashPos = path.indexOf('/', start);
+            if (slashPos < 0) {
+                slashPos = len;
+            }
+
+            String part = path.substring(start, slashPos);
+            part.trim();
+
+            if (!part.isEmpty() && part != ".") {
+                if (part == "..") {
+                    const int lastSlash = result.lastIndexOf('/');
+                    if (lastSlash >= 0) {
+                        result.remove(lastSlash);
+                    } else {
+                        result = "";
+                    }
+                } else {
+                    if (!result.isEmpty()) {
+                        result += "/";
+                    }
+
+                    result += part;
+                }
+            }
+
+            if (slashPos >= len) {
+                break;
+            }
+
+            start = slashPos + 1;
+        }
+
+        return result;
     }
 
     bool findEndOfCentralDirectory(
@@ -438,6 +650,36 @@ bool EpubParserService::extractZipEntryToFile(
         return true;
     }
 
+    if (entry.method == 8) {
+        if (!seekToZipEntryPayload(file, entry)) {
+            outFile.close();
+            m_fs.remove(outputPath);
+            return false;
+        }
+
+        String detail;
+        const bool ok = inflateZipEntryToFile(
+            file,
+            outFile,
+            entry.name,
+            entry.compressedSize,
+            entry.uncompressedSize,
+            detail
+        );
+
+        outFile.close();
+
+        if (!ok) {
+            Serial.print("EPUB: stream deflate to file failed: ");
+            Serial.println(detail);
+            m_fs.remove(outputPath);
+            setLastError("Deflate decompression to file failed", detail);
+            return false;
+        }
+
+        return true;
+    }
+
     outFile.close();
 
     uint8_t *data = nullptr;
@@ -569,6 +811,10 @@ bool EpubParserService::findZipEntry(File &file, const char *entryPath, ZipEntry
         return false;
     }
 
+    const String requestedPath = normalizeZipLookupPath(String(entryPath));
+    String requestedLower = requestedPath;
+    requestedLower.toLowerCase();
+
     uint32_t centralDirOffset = 0;
     uint16_t totalEntries = 0;
 
@@ -616,7 +862,13 @@ bool EpubParserService::findZipEntry(File &file, const char *entryPath, ZipEntry
             return false;
         }
 
-        if (fileName == String(entryPath)) {
+        const String normalizedFileName = normalizeZipLookupPath(fileName);
+        String normalizedFileNameLower = normalizedFileName;
+        normalizedFileNameLower.toLowerCase();
+
+        if (fileName == String(entryPath)
+            || normalizedFileName == requestedPath
+            || normalizedFileNameLower == requestedLower) {
             outEntry.name = fileName;
             outEntry.method = method;
             outEntry.compressedSize = compressedSize;
@@ -628,6 +880,8 @@ bool EpubParserService::findZipEntry(File &file, const char *entryPath, ZipEntry
         }
     }
 
+    Serial.print("EPUB: ZIP entry not found, requested=");
+    Serial.println(requestedPath);
     return false;
 }
 

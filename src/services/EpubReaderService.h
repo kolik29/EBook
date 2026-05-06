@@ -24,6 +24,7 @@ public:
     void showCurrentPage();
     void nextPage();
     void prevPage();
+    void releaseMemoryForWifi();
 
     // Navigate to a global page within the currently open book.
     // Returns false if the book is not open or the page index is out of range.
@@ -39,6 +40,12 @@ private:
         int globalPage = 1;
         int totalPages = 0;
         bool valid = false;
+    };
+
+    struct RenderedPageCacheEntry {
+        int spineIndex = -1;
+        int pageIndex = -1;
+        HtmlRenderPage page;
     };
 
     fs::FS &m_fs;
@@ -60,9 +67,12 @@ private:
     bool m_opened = false;
 
     std::string m_currentSpineHtml;
-    std::vector<HtmlRenderPage> m_currentPages;
+    HtmlRenderPage m_currentRenderedPage;
+    bool m_currentRenderedPageReady = false;
+    std::vector<RenderedPageCacheEntry> m_renderedPageCache;
     std::vector<int> m_spinePageCounts;
     int m_totalPageCount = 0;
+    int m_lastNavigationDirection = 0;
 
     bool buildPageIndex();
     bool loadPageIndexCache();
@@ -75,9 +85,15 @@ private:
     bool setPositionByGlobalPage(int globalPage);
 
     bool loadCurrentSpineItem(int preferredPageIndex = 0);
+    bool loadRenderedPage(int pageIndex, HtmlRenderPage &outPage, int &actualPageCount);
+    bool findRenderedPageInCache(int spineIndex, int pageIndex, HtmlRenderPage &outPage) const;
+    void cacheRenderedPage(int spineIndex, int pageIndex, const HtmlRenderPage &page);
+    void pruneRenderedPageCache();
+    void prefetchAdjacentPages();
     bool ensureCurrentSpineHtml();
     void clearCurrentSpineCache();
     void clearCurrentRenderedPages();
+    void clearCurrentRenderBuffer();
     void renderCurrentPage();
 
     int getGlobalPageNumber() const;

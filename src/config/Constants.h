@@ -13,7 +13,7 @@ namespace Constants {
     constexpr int HTML_PAGE_CONTENT_WIDTH_PX = 452;
     constexpr int HTML_PAGE_CONTENT_HEIGHT_PX = 696;
     constexpr int HTML_DEFAULT_IMAGE_HEIGHT_PX = 260;
-    constexpr int PAGE_INDEX_VERSION = 8;
+    constexpr int PAGE_INDEX_VERSION = 9;
 
     // Partial page updates are fast; a periodic full refresh keeps the panel
     // conditioned without flashing on every page turn.
