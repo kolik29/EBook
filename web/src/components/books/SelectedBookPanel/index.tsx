@@ -54,7 +54,7 @@ const SelectedBookPanel = () => {
     }
 
     return (
-        <Box sx={{ p: 2 }} className={clsx('position__relative', 'height__100', 'display__flex', 'flex-direction__column', 'align-items__center', styles.leftSide)}>
+        <Box sx={{ p: { xs: 1, md: 2 } }} className={clsx('position__relative', 'height__100', 'display__flex', 'flex-direction__column', 'align-items__center', styles.leftSide)}>
             <Box className={clsx(styles.cover)}>
                 <BookCover
                     src={selectedBook.img}
@@ -65,15 +65,15 @@ const SelectedBookPanel = () => {
                 <Typography
                     variant='h1'
                     sx={{
-                        fontSize: { xs: 24, md: 36 },
-                        marginTop: { xs: 2, md: 4 },
-                        marginBottom: { xs: 2, md: 4 }
+                        fontSize: { xs: 22, md: 36 },
+                        marginTop: { xs: 1, md: 4 },
+                        marginBottom: { xs: 1, md: 4 }
                     }}
                     className={clsx('text-align__center', styles.title)}
                 >
                     {selectedBook.title}
                 </Typography>
-                <Typography variant='body1' sx={{ marginBottom: { xs: 2, md: 4 } }}>
+                <Typography variant='body1' sx={{ marginBottom: { xs: 1, md: 4 }, textAlign: 'center' }}>
                     {selectedBook.author}
                 </Typography>
                 <Box className={clsx('display__flex', 'align-items__center')}>
@@ -90,13 +90,13 @@ const SelectedBookPanel = () => {
                 </Box>
                 <Box className={clsx(styles.actions)}>
                     <IconButton onClick={handlePrevPage}>
-                        <SkipPreviousIcon sx={{ fontSize: { xs: 48, md: 48 } }} />
+                        <SkipPreviousIcon sx={{ fontSize: { xs: 40, md: 48 } }} />
                     </IconButton>
                     <IconButton onClick={handleSendPage}>
-                        <PlayArrowIcon sx={{ fontSize: { xs: 48, md: 48 } }} />
+                        <PlayArrowIcon sx={{ fontSize: { xs: 40, md: 48 } }} />
                     </IconButton>
                     <IconButton onClick={handleNextPage}>
-                        <SkipNextIcon sx={{ fontSize: { xs: 48, md: 48 } }} />
+                        <SkipNextIcon sx={{ fontSize: { xs: 40, md: 48 } }} />
                     </IconButton>
                 </Box>
             </Box>

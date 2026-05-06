@@ -25,8 +25,6 @@ const BookCover = ({
                     alignItems: "center",
                     justifyContent: "center",
                     bgcolor: "action.hover",
-                    border: "1px solid",
-                    borderColor: "divider",
                 }}
             >
                 <MenuBookIcon sx={{ fontSize: 40, opacity: 0.6 }} />
@@ -43,10 +41,11 @@ const BookCover = ({
             sx={{
                 width,
                 height,
-                objectFit: "cover",
+                maxWidth: "100%",
+                maxHeight: "100%",
+                objectFit: "contain",
+                objectPosition: "center",
                 display: "block",
-                border: "1px solid",
-                borderColor: "divider",
             }}
         />
     );

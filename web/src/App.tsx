@@ -8,7 +8,7 @@ import clsx from 'clsx';
 
 export default function App() {
     return (
-        <Box sx={{ p: { xs: 0, md: 2 } }} className={clsx('height__100vh')}>
+        <Box sx={{ p: { xs: 0, md: 2 } }} className={clsx('height__100vh', styles.appShell)}>
             <Box className={clsx('display__grid', 'width__100', 'height__100', 'position__relative', styles.container)}>
                 <Box className={clsx('display__none--xs')}>
                     <Paper>

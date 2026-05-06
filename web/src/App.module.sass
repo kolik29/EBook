@@ -1,16 +1,22 @@
 body
     margin: 0
-  
+
+.appShell
+    overflow: hidden
+
 .container
     position: relative
     grid-template-columns: min(30%, 500px) 1fr
     grid-template-rows: auto 1fr
     gap: 16px
+    min-height: 0
     max-height: 100vh
+    max-height: 100dvh
+    overflow: hidden
 
     @media screen and (max-width: 900px)
         grid-template-columns: 1fr
-        grid-template-rows: 1fr auto auto
+        grid-template-rows: minmax(0, 1fr) auto auto
 
 .bottomBar
     display: grid
@@ -19,4 +25,5 @@ body
 
 .gridItem
     min-width: 0
-    overflow: auto
+    min-height: 0
+    overflow: hidden

@@ -1,13 +1,26 @@
 .cover
-    height: 300px
-    max-width: 100%
+    aspect-ratio: 2 / 3
+    height: clamp(180px, 34dvh, 340px)
     width: auto
-    object-fit: contain
+    max-width: 72vw
+    display: flex
+    align-items: center
+    justify-content: center
+    overflow: hidden
 
     img
         width: 100%
         height: 100%
         object-fit: contain
+
+@media (min-width: 900px)
+    .cover
+        height: auto
+        width: min(100%, 320px)
+
+.leftSide
+    min-height: 0
+    overflow: hidden
 
 .delete
     left: 16px

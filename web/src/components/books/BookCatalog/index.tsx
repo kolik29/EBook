@@ -103,6 +103,8 @@ const BookCatalog = () => {
                 modules={[FreeMode]}
                 slidesPerView='auto'
                 spaceBetween={16}
+                slidesOffsetBefore={20}
+                slidesOffsetAfter={20}
                 freeMode={{
                     enabled: true,
                     momentum: true,

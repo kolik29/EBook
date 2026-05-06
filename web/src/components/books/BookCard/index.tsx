@@ -7,7 +7,7 @@ import BookCover from '../BookCover';
 const BookCard = ({ img, title, active, onClick }: { img: string; title: string; active: boolean, onClick?: () => void }) => {
     return (
         <Box className={clsx('display__grid', 'height__100', styles.item)} onClick={onClick}>
-            <Box className={clsx('position__relative overflow__hidden')}>
+            <Box className={clsx('position__relative', styles.coverFrame)}>
                 <BookCover
                     src={img}
                     alt={title}
