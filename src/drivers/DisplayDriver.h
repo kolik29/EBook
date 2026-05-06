@@ -26,6 +26,9 @@ public:
     );
 
     void begin();
+    void update();
+    void prepareForPageTurn();
+    void powerOffNow();
 
     void showMessage(const String &title, const String &message);
     void showTextPage(const String &title, const String &text, int page, int totalPages);
@@ -59,8 +62,13 @@ private:
     int m_dinPin;
     int m_partialUpdateCounter = 0;
     bool m_forceNextPageFullRefresh = true;
+    bool m_powerOffScheduled = false;
+    bool m_controllerPrepared = false;
+    unsigned long m_powerOffDueAt = 0;
 
     void powerOn();
+    void cancelScheduledPowerOff();
+    void schedulePowerOff();
     void renderWrappedText(const String &text, int x, int y, int maxCharsPerLine, int lineHeight);
     void renderPreformattedText(const String &text, int x, int y, int lineHeight, int maxLines);
     void renderPreformattedTextBw(const String &text, int x, int y, int lineHeight, int maxLines);

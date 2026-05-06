@@ -833,7 +833,7 @@ void DisplayDriver::begin() {
 
     m_display.epd2.selectSPI(
         m_spi,
-        SPISettings(4000000, MSBFIRST, SPI_MODE0)
+        SPISettings(Constants::DISPLAY_SPI_FREQUENCY_HZ, MSBFIRST, SPI_MODE0)
     );
 
     m_display.init(115200, true, 2, false);
@@ -871,9 +871,11 @@ void DisplayDriver::showMessage(const String &title, const String &message) {
 
     m_display.hibernate();
     m_forceNextPageFullRefresh = true;
+    m_controllerPrepared = false;
 }
 
 void DisplayDriver::showTextPage(const String &title, const String &text, int page, int totalPages) {
+    cancelScheduledPowerOff();
     powerOn();
     m_displayBw.setTextWrap(false);
 
@@ -965,7 +967,8 @@ void DisplayDriver::showTextPage(const String &title, const String &text, int pa
     } while (m_displayBw.nextPage());
 
     m_forceNextPageFullRefresh = false;
-    m_displayBw.powerOff();
+    m_controllerPrepared = true;
+    schedulePowerOff();
 }
 
 void DisplayDriver::showHtmlPage(
@@ -975,6 +978,8 @@ void DisplayDriver::showHtmlPage(
     int totalPages,
     HtmlImageLoader imageLoader
 ) {
+    cancelScheduledPowerOff();
+
     if (!pageHasImages(htmlPage)) {
         showHtmlPageBw(title, htmlPage, page, totalPages);
         return;
@@ -1060,11 +1065,69 @@ void DisplayDriver::showHtmlPage(
     // is drawn with a partial update. Force one full refresh after the image page.
     m_forceNextPageFullRefresh = true;
     m_display.powerOff();
+    m_powerOffScheduled = false;
+    m_controllerPrepared = false;
 }
 
 void DisplayDriver::powerOn() {
     digitalWrite(m_pwrPin, HIGH);
     delay(20);
+}
+
+void DisplayDriver::update() {
+    if (!m_powerOffScheduled) {
+        return;
+    }
+
+    if (static_cast<long>(millis() - m_powerOffDueAt) < 0) {
+        return;
+    }
+
+    powerOffNow();
+}
+
+void DisplayDriver::prepareForPageTurn() {
+    cancelScheduledPowerOff();
+    powerOn();
+
+    if (m_controllerPrepared) {
+        schedulePowerOff();
+        return;
+    }
+
+    const unsigned long startedAt = millis();
+    Serial.println("DISPLAY: prewarm start");
+
+    const uint8_t whitePixel = 0xFF;
+    m_displayBw.epd2.writeImage(&whitePixel, 0, 0, 8, 1);
+    m_displayBw.setRotation(1);
+    m_displayBw.setTextWrap(false);
+
+    m_controllerPrepared = true;
+    schedulePowerOff();
+
+    Serial.print("DISPLAY: prewarm ms = ");
+    Serial.println(millis() - startedAt);
+}
+
+void DisplayDriver::powerOffNow() {
+    m_powerOffScheduled = false;
+    m_controllerPrepared = false;
+
+    const unsigned long startedAt = millis();
+    Serial.println("DISPLAY: idle power off");
+    m_displayBw.powerOff();
+    Serial.print("DISPLAY: idle power off ms = ");
+    Serial.println(millis() - startedAt);
+}
+
+void DisplayDriver::cancelScheduledPowerOff() {
+    m_powerOffScheduled = false;
+}
+
+void DisplayDriver::schedulePowerOff() {
+    m_powerOffDueAt = millis() + Constants::DISPLAY_POWER_OFF_IDLE_MS;
+    m_powerOffScheduled = true;
 }
 
 void DisplayDriver::renderWrappedText(const String &text, int x, int y, int maxCharsPerLine, int lineHeight) {
@@ -1269,6 +1332,7 @@ void DisplayDriver::showHtmlPageBw(
 ) {
     const unsigned long startedAt = millis();
 
+    cancelScheduledPowerOff();
     powerOn();
     m_displayBw.setTextWrap(false);
 
@@ -1380,7 +1444,8 @@ void DisplayDriver::showHtmlPageBw(
     Serial.println(refreshedAt - startedAt);
 
     m_forceNextPageFullRefresh = false;
-    m_displayBw.powerOff();
+    m_controllerPrepared = true;
+    schedulePowerOff();
 }
 
 void DisplayDriver::renderHtmlElement(

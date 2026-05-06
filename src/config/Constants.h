@@ -19,6 +19,8 @@ namespace Constants {
     // conditioned without flashing on every page turn.
     constexpr bool DISPLAY_USE_PARTIAL_PAGE_UPDATES = true;
     constexpr int DISPLAY_FULL_REFRESH_AFTER_PARTIALS = 8;
+    constexpr unsigned long DISPLAY_POWER_OFF_IDLE_MS = 5UL * 60UL * 1000UL;
+    constexpr uint32_t DISPLAY_SPI_FREQUENCY_HZ = 16000000UL;
     constexpr float DISPLAY_IMAGE_MAX_UPSCALE = 2.0f;
     constexpr bool DISPLAY_IMAGE_USE_ERROR_DIFFUSION = true;
     constexpr int DISPLAY_IMAGE_BLACK_POINT = 18;

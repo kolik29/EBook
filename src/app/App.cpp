@@ -117,6 +117,7 @@ void App::update() {
 
     m_wifiService.update();
     m_ledService.update();
+    m_display.update();
 }
 
 void App::handleNextButtonEvent(const ButtonEvent &event) {
@@ -134,8 +135,16 @@ void App::handleNextButtonEvent(const ButtonEvent &event) {
             Serial.println("NEXT long press");
             break;
 
-        case ButtonEventType::None:
         case ButtonEventType::Pressed:
+            Serial.println("NEXT pressed");
+
+            if (m_epubReaderService && !m_wifiService.isEnabled()) {
+                m_display.prepareForPageTurn();
+            }
+
+            break;
+
+        case ButtonEventType::None:
         case ButtonEventType::Released:
         default:
             break;
@@ -157,8 +166,16 @@ void App::handlePrevButtonEvent(const ButtonEvent &event) {
             Serial.println("PREV long press");
             break;
 
-        case ButtonEventType::None:
         case ButtonEventType::Pressed:
+            Serial.println("PREV pressed");
+
+            if (m_epubReaderService && !m_wifiService.isEnabled()) {
+                m_display.prepareForPageTurn();
+            }
+
+            break;
+
+        case ButtonEventType::None:
         case ButtonEventType::Released:
         default:
             break;
@@ -177,6 +194,8 @@ void App::handleBothButtonsHold() {
         Serial.println("BOTH buttons long press -> WIFI MODE");
 
         if (!m_wifiService.isEnabled()) {
+            m_display.powerOffNow();
+
             if (m_epubReaderService) {
                 m_epubReaderService->releaseMemoryForWifi();
             }

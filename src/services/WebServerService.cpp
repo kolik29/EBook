@@ -295,24 +295,71 @@ static bool extractCurrentPageFromBody(const String &body, uint32_t &currentPage
         return false;
     }
 
+    auto parsePageText = [&currentPage](String value) {
+        value.trim();
+
+        if (!isDigitsOnly(value)) {
+            return false;
+        }
+
+        const unsigned long parsed = strtoul(value.c_str(), nullptr, 10);
+        if (parsed < 1) {
+            return false;
+        }
+
+        currentPage = static_cast<uint32_t>(parsed);
+        return true;
+    };
+
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, body);
 
-    if (!error && doc["currentPage"].is<int>()) {
-        const int value = doc["currentPage"].as<int>();
-        if (value >= 1) {
-            currentPage = static_cast<uint32_t>(value);
-            return true;
+    if (!error) {
+        JsonVariant pageValue = doc["currentPage"];
+
+        if (pageValue.is<int>()) {
+            const int value = pageValue.as<int>();
+            if (value >= 1) {
+                currentPage = static_cast<uint32_t>(value);
+                return true;
+            }
+            return false;
         }
-        return false;
+
+        if (pageValue.is<unsigned int>()) {
+            const unsigned int value = pageValue.as<unsigned int>();
+            if (value >= 1) {
+                currentPage = static_cast<uint32_t>(value);
+                return true;
+            }
+            return false;
+        }
+
+        if (pageValue.is<const char *>()) {
+            if (parsePageText(String(pageValue.as<const char *>()))) {
+                return true;
+            }
+            return false;
+        }
+
+        if (pageValue.is<String>()) {
+            if (parsePageText(pageValue.as<String>())) {
+                return true;
+            }
+            return false;
+        }
+
+        if (!pageValue.isNull()) {
+            String value;
+            serializeJson(pageValue, value);
+            if (parsePageText(value)) {
+                return true;
+            }
+            return false;
+        }
     }
 
-    if (isDigitsOnly(body)) {
-        currentPage = static_cast<uint32_t>(body.toInt());
-        return currentPage >= 1;
-    }
-
-    return false;
+    return parsePageText(body);
 }
 
 static void sendBooksFromLibrary(LibraryService *libraryService) {

@@ -495,16 +495,6 @@ void EpubReaderService::renderCurrentPage() {
             return true;
         }
 
-        if (m_parser.extractResourceData(
-            m_epubPath,
-            path,
-            5 * 1024 * 1024,
-            outData,
-            outSize
-        )) {
-            return true;
-        }
-
         if (m_parser.extractResourceToFile(
             m_epubPath,
             path,
@@ -512,6 +502,16 @@ void EpubReaderService::renderCurrentPage() {
             cachePath
         )) {
             outFilePath = cachePath;
+            return true;
+        }
+
+        if (m_parser.extractResourceData(
+            m_epubPath,
+            path,
+            5 * 1024 * 1024,
+            outData,
+            outSize
+        )) {
             return true;
         }
 
