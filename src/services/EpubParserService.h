@@ -21,7 +21,6 @@ public:
     bool parseBookStructure(const String &epubPath, EpubBookStructure &structure);
     bool readSpineItemHtml(const String &epubPath, const EpubSpineItem &item, String &html);
     bool readSpineItemHtml(const String &epubPath, const EpubSpineItem &item, std::string &html);
-    bool readSpineItemText(const String &epubPath, const EpubSpineItem &item, String &text);
     bool extractResourceData(
         const String &epubPath,
         const String &resourcePath,

@@ -148,22 +148,6 @@ bool WifiService::isEnabled() const {
     return m_enabled;
 }
 
-bool WifiService::isApStarted() const {
-    return m_apStarted;
-}
-
-bool WifiService::isStaConnected() const {
-    return m_state == State::Connected;
-}
-
-bool WifiService::isStaFinished() const {
-    return m_state == State::Connected || m_state == State::Failed;
-}
-
-int WifiService::getAttemptCount() const {
-    return m_staAttempts;
-}
-
 void WifiService::startAccessPoint() {
     if (m_apStarted) {
         return;

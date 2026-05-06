@@ -8,8 +8,6 @@ namespace Constants {
     constexpr unsigned long WIFI_AUTO_DISABLE_MS = 15UL * 60UL * 1000UL;
 
     // Page layout — shared between EpubReaderService and upload-time page builder
-    constexpr int PAGE_MAX_CHARS_PER_LINE = 40;
-    constexpr int PAGE_MAX_LINES_PER_PAGE = 30;
     constexpr int HTML_PAGE_CONTENT_WIDTH_PX = 452;
     constexpr int HTML_PAGE_CONTENT_HEIGHT_PX = 696;
     constexpr int HTML_DEFAULT_IMAGE_HEIGHT_PX = 260;

@@ -285,19 +285,6 @@ namespace BookTextCodec {
         return text.substring(0, index);
     }
 
-    int utf8CodepointCount(const String &text) {
-        int index = 0;
-        int count = 0;
-
-        while (index < text.length()) {
-            uint32_t codepoint = 0;
-            readUtf8Codepoint(text, index, codepoint);
-            count++;
-        }
-
-        return count;
-    }
-
     void appendUtf8Codepoint(String &text, uint32_t codepoint) {
         if (codepoint <= 0x7F) {
             text += static_cast<char>(codepoint);

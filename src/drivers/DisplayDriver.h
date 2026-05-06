@@ -31,7 +31,6 @@ public:
     void powerOffNow();
 
     void showMessage(const String &title, const String &message);
-    void showTextPage(const String &title, const String &text, int page, int totalPages);
     void showHtmlPage(
         const String &title,
         const HtmlRenderPage &htmlPage,
@@ -70,8 +69,6 @@ private:
     void cancelScheduledPowerOff();
     void schedulePowerOff();
     void renderWrappedText(const String &text, int x, int y, int maxCharsPerLine, int lineHeight);
-    void renderPreformattedText(const String &text, int x, int y, int lineHeight, int maxLines);
-    void renderPreformattedTextBw(const String &text, int x, int y, int lineHeight, int maxLines);
     bool pageHasImages(const HtmlRenderPage &htmlPage) const;
     void preloadHtmlImages(
         const HtmlRenderPage &htmlPage,

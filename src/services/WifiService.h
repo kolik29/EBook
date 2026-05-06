@@ -21,10 +21,6 @@ public:
     void refreshAutoDisable();
 
     bool isEnabled() const;
-    bool isApStarted() const;
-    bool isStaConnected() const;
-    bool isStaFinished() const;
-    int getAttemptCount() const;
 
     void setLibraryService(LibraryService *libraryService);
     void setOnOpenBookPage(std::function<void(const String &, uint32_t)> cb);

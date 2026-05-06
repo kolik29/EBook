@@ -10,12 +10,6 @@ public:
     SdCardDriver(int sckPin, int misoPin, int mosiPin, int csPin);
 
     bool begin();
-    bool isMounted() const;
-
-    uint8_t cardType() const;
-    uint64_t cardSizeMb() const;
-    uint64_t totalSizeMb() const;
-    uint64_t usedSizeMb() const;
 
     void printCardInfo(Stream &out) const;
     void listDir(const char *path, uint8_t levels, Stream &out) const;
@@ -30,4 +24,8 @@ private:
     int m_csPin;
 
     bool m_mounted = false;
+
+    uint64_t cardSizeMb() const;
+    uint64_t totalSizeMb() const;
+    uint64_t usedSizeMb() const;
 };

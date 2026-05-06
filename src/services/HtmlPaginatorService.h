@@ -11,29 +11,13 @@ class HtmlPaginatorService {
 public:
     HtmlPaginatorService(int pageWidthPx, int pageHeightPx);
 
-    std::vector<HtmlRenderPage> paginate(const String &html, const String &baseFilePath) const;
-    std::vector<HtmlRenderPage> paginate(const std::string &html, const String &baseFilePath) const;
     int countPages(const String &html, const String &baseFilePath) const;
     int countPages(const std::string &html, const String &baseFilePath) const;
     bool paginatePage(
         const String &html,
         const String &baseFilePath,
         int pageIndex,
-        HtmlRenderPage &outPage,
-        int &outPageCount
-    ) const;
-    bool paginatePage(
-        const String &html,
-        const String &baseFilePath,
-        int pageIndex,
         int knownPageCount,
-        HtmlRenderPage &outPage,
-        int &outPageCount
-    ) const;
-    bool paginatePage(
-        const std::string &html,
-        const String &baseFilePath,
-        int pageIndex,
         HtmlRenderPage &outPage,
         int &outPageCount
     ) const;
@@ -68,7 +52,6 @@ private:
     };
 
     struct PageCollector {
-        std::vector<HtmlRenderPage> *pages = nullptr;
         HtmlRenderPage *targetPage = nullptr;
         int targetPageIndex = -1;
         int knownPageCount = 0;

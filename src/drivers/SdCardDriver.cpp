@@ -15,17 +15,6 @@ bool SdCardDriver::begin() {
     return m_mounted;
 }
 
-bool SdCardDriver::isMounted() const {
-    return m_mounted;
-}
-
-uint8_t SdCardDriver::cardType() const {
-    if (!m_mounted) {
-        return CARD_NONE;
-    }
-    return SD.cardType();
-}
-
 uint64_t SdCardDriver::cardSizeMb() const {
     if (!m_mounted) {
         return 0;

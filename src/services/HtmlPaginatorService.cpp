@@ -92,42 +92,6 @@ HtmlPaginatorService::HtmlPaginatorService(int pageWidthPx, int pageHeightPx)
       m_pageHeightPx(pageHeightPx) {
 }
 
-std::vector<HtmlRenderPage> HtmlPaginatorService::paginate(
-    const String &html,
-    const String &baseFilePath
-) const {
-    std::vector<HtmlRenderPage> pages;
-    PageCollector collector;
-    collector.pages = &pages;
-
-    BookHtmlView htmlView(html);
-    paginateInternal(htmlView, baseFilePath, collector);
-
-    if (pages.empty()) {
-        pages.push_back(HtmlRenderPage());
-    }
-
-    return pages;
-}
-
-std::vector<HtmlRenderPage> HtmlPaginatorService::paginate(
-    const std::string &html,
-    const String &baseFilePath
-) const {
-    std::vector<HtmlRenderPage> pages;
-    PageCollector collector;
-    collector.pages = &pages;
-
-    BookHtmlView htmlView(html);
-    paginateInternal(htmlView, baseFilePath, collector);
-
-    if (pages.empty()) {
-        pages.push_back(HtmlRenderPage());
-    }
-
-    return pages;
-}
-
 int HtmlPaginatorService::countPages(const String &html, const String &baseFilePath) const {
     PageCollector collector;
     BookHtmlView htmlView(html);
@@ -146,24 +110,6 @@ bool HtmlPaginatorService::paginatePage(
     const String &html,
     const String &baseFilePath,
     int pageIndex,
-    HtmlRenderPage &outPage,
-    int &outPageCount
-) const {
-    BookHtmlView htmlView(html);
-    return paginatePageFromView(
-        htmlView,
-        baseFilePath,
-        pageIndex,
-        0,
-        outPage,
-        outPageCount
-    );
-}
-
-bool HtmlPaginatorService::paginatePage(
-    const String &html,
-    const String &baseFilePath,
-    int pageIndex,
     int knownPageCount,
     HtmlRenderPage &outPage,
     int &outPageCount
@@ -174,24 +120,6 @@ bool HtmlPaginatorService::paginatePage(
         baseFilePath,
         pageIndex,
         knownPageCount,
-        outPage,
-        outPageCount
-    );
-}
-
-bool HtmlPaginatorService::paginatePage(
-    const std::string &html,
-    const String &baseFilePath,
-    int pageIndex,
-    HtmlRenderPage &outPage,
-    int &outPageCount
-) const {
-    BookHtmlView htmlView(html);
-    return paginatePageFromView(
-        htmlView,
-        baseFilePath,
-        pageIndex,
-        0,
         outPage,
         outPageCount
     );
@@ -1118,9 +1046,7 @@ void HtmlPaginatorService::pushPageIfNotEmpty(
     if (!currentPage.elements.empty()) {
         const int pageIndex = collector.pageCount;
 
-        if (collector.pages) {
-            collector.pages->push_back(std::move(currentPage));
-        } else if (collector.targetPage && pageIndex == collector.targetPageIndex) {
+        if (collector.targetPage && pageIndex == collector.targetPageIndex) {
             *collector.targetPage = std::move(currentPage);
             collector.targetPageFound = true;
         }

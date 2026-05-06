@@ -46,9 +46,36 @@ size_t TimestampedSerial::write(uint8_t value) {
 
 size_t TimestampedSerial::write(const uint8_t *buffer, size_t size) {
     size_t written = 0;
+    size_t offset = 0;
 
-    for (size_t i = 0; i < size; i++) {
-        written += write(buffer[i]);
+    while (offset < size) {
+        if (m_atLineStart) {
+            const uint8_t value = buffer[offset];
+
+            if (value == '\r' || value == '\n') {
+                written += m_serial.write(value);
+                m_atLineStart = true;
+                offset++;
+                continue;
+            }
+
+            writePrefix();
+        }
+
+        const size_t chunkStart = offset;
+
+        while (offset < size && buffer[offset] != '\n') {
+            offset++;
+        }
+
+        if (offset < size && buffer[offset] == '\n') {
+            offset++;
+            m_atLineStart = true;
+        } else {
+            m_atLineStart = false;
+        }
+
+        written += m_serial.write(buffer + chunkStart, offset - chunkStart);
     }
 
     return written;

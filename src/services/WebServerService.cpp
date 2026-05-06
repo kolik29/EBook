@@ -1081,7 +1081,3 @@ void WebServerService::stop() {
 
     Serial.println("WEB: server stopped");
 }
-
-bool WebServerService::isRunning() const {
-    return m_running;
-}

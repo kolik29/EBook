@@ -32,14 +32,21 @@ namespace {
     unsigned long gSegmentStartedAt = 0;
     size_t gCurrentIndex = 0;
 
-    uint8_t lerp8(uint8_t a, uint8_t b, float t) {
-        return static_cast<uint8_t>(a + (b - a) * t);
+    uint8_t lerp8(uint8_t a, uint8_t b, unsigned long elapsedMs) {
+        if (elapsedMs >= kBlendMs) {
+            return b;
+        }
+
+        const int delta = static_cast<int>(b) - static_cast<int>(a);
+        return static_cast<uint8_t>(
+            static_cast<int>(a) + (delta * static_cast<int>(elapsedMs)) / static_cast<int>(kBlendMs)
+        );
     }
 
-    uint32_t blendColor(const RgbColor &from, const RgbColor &to, float t) {
-        uint8_t r = lerp8(from.r, to.r, t);
-        uint8_t g = lerp8(from.g, to.g, t);
-        uint8_t b = lerp8(from.b, to.b, t);
+    uint32_t blendColor(const RgbColor &from, const RgbColor &to, unsigned long elapsedMs) {
+        uint8_t r = lerp8(from.r, to.r, elapsedMs);
+        uint8_t g = lerp8(from.g, to.g, elapsedMs);
+        uint8_t b = lerp8(from.b, to.b, elapsedMs);
         return strip.Color(r, g, b);
     }
 }
@@ -72,10 +79,6 @@ void LedService::disable() {
     strip.show();
 }
 
-bool LedService::isEnabled() const {
-    return m_enabled;
-}
-
 void LedService::update() {
     if (!m_enabled) {
         return;
@@ -88,16 +91,17 @@ void LedService::update() {
 
     gLastStepAt = now;
 
-    const size_t nextIndex = (gCurrentIndex + 1) % kPaletteSize;
-    float t = static_cast<float>(now - gSegmentStartedAt) / static_cast<float>(kBlendMs);
+    size_t nextIndex = (gCurrentIndex + 1) % kPaletteSize;
+    unsigned long elapsedMs = now - gSegmentStartedAt;
 
-    if (t >= 1.0f) {
+    if (elapsedMs >= kBlendMs) {
         gCurrentIndex = nextIndex;
         gSegmentStartedAt = now;
-        t = 0.0f;
+        nextIndex = (gCurrentIndex + 1) % kPaletteSize;
+        elapsedMs = 0;
     }
 
-    uint32_t color = blendColor(kPalette[gCurrentIndex], kPalette[nextIndex], t);
+    uint32_t color = blendColor(kPalette[gCurrentIndex], kPalette[nextIndex], elapsedMs);
     strip.setPixelColor(0, color);
     strip.show();
 }

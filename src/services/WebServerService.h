@@ -15,8 +15,6 @@ public:
     void update();
     void stop();
 
-    bool isRunning() const;
-
     void setLibraryService(LibraryService *libraryService);
 
     // Called after a successful PATCH /books/:id so the device can open

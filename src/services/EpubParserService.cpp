@@ -1458,95 +1458,6 @@ namespace {
             || href.endsWith(".htm");
     }
 
-    String cleanupHtmlToText(String html) {
-        auto removeBlocks = [](String &s, const char *open, const char *close) {
-            while (true) {
-                String lower = s; lower.toLowerCase();
-                int start = lower.indexOf(open);
-                if (start < 0) break;
-                int end = lower.indexOf(close, start);
-                if (end < 0) break;
-                s.remove(start, end + strlen(close) - start);
-            }
-        };
-        removeBlocks(html, "<style",  "</style>");
-        removeBlocks(html, "<script", "</script>");
-        
-        html.replace("\r", "\n");
-        html = BookTextCodec::decodeHtmlEntities(html);
-
-        String result = "";
-        bool insideTag = false;
-        bool lastWasSpace = false;
-        bool lastWasNewLine = false;
-
-        for (int i = 0; i < html.length(); i++) {
-            const char c = html[i];
-
-            if (c == '<') {
-                insideTag = true;
-
-                int tagPreviewEnd = i + 12;
-
-                if (tagPreviewEnd > static_cast<int>(html.length())) {
-                    tagPreviewEnd = html.length();
-                }
-
-                String tag = html.substring(i, tagPreviewEnd);
-                tag.toLowerCase();
-
-                if (tag.startsWith("<p")
-                    || tag.startsWith("</p")
-                    || tag.startsWith("<br")
-                    || tag.startsWith("<div")
-                    || tag.startsWith("</div")
-                    || tag.startsWith("<h1")
-                    || tag.startsWith("</h1")
-                    || tag.startsWith("<h2")
-                    || tag.startsWith("</h2")
-                    || tag.startsWith("<h3")
-                    || tag.startsWith("</h3")) {
-                    if (!lastWasNewLine) {
-                        result += '\n';
-                        lastWasNewLine = true;
-                        lastWasSpace = false;
-                    }
-                }
-
-                continue;
-            }
-
-            if (c == '>') {
-                insideTag = false;
-                continue;
-            }
-
-            if (insideTag) {
-                continue;
-            }
-
-            if (c == '\n' || c == '\t' || c == ' ') {
-                if (!lastWasSpace && !lastWasNewLine) {
-                    result += ' ';
-                    lastWasSpace = true;
-                }
-
-                continue;
-            }
-
-            result += c;
-            lastWasSpace = false;
-            lastWasNewLine = false;
-        }
-
-        result.trim();
-
-        while (result.indexOf("\n\n\n") >= 0) {
-            result.replace("\n\n\n", "\n\n");
-        }
-
-        return result;
-    }
 }
 
 bool EpubParserService::parseBookStructure(
@@ -1717,31 +1628,6 @@ bool EpubParserService::parseBookStructure(
             setLastError("OPF spine items resolved to empty paths", packagePath);
         }
 
-        return false;
-    }
-
-    return true;
-}
-
-bool EpubParserService::readSpineItemText(
-    const String &epubPath,
-    const EpubSpineItem &item,
-    String &text
-) {
-    text = "";
-
-    String html;
-    if (!readSpineItemHtml(epubPath, item, html)) {
-        return false;
-    }
-
-    text = cleanupHtmlToText(html);
-
-    Serial.print("EPUB: text length = ");
-    Serial.println(text.length());
-
-    if (text.isEmpty()) {
-        setLastError("EPUB section contains no readable text", item.path);
         return false;
     }
 
